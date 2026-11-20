@@ -60,7 +60,7 @@ tools/      抓包分析 / 样本构建 / 回放验证 / 控制台
   mockctl.py          唯一入口：ports / cert-* / serve / health / selftest
 tests/      pytest 56 项（含真实抓包矩阵、TLS 端到端、脱敏门禁）
 profiles/   offline-mock.json（与产品 profile 无关的独立配置）
-docs/       阶段一结项档 + A2 主机依赖侦察 + B2/B3 大厅/登录侦察
+docs/       结项档 + A2 主机依赖侦察 + B2/B3 大厅/登录侦察 + T4 运行时出网清单
 ```
 
 ## 5 分钟跑起来（不需要游戏、不需要管理员）
@@ -110,6 +110,6 @@ python tools\replay_client.py --src samples\store-season --mode server `
 | 官方 API 零外连（180s 全程序连接采样：真实 API IP 0 命中，只有本机 mock） | ✓✓ 实机（详见结项档 §2.4.3） |
 | 任务链 / 大厅链状态机（含 Create 回显、connectionString 原样转发） | ✓ 离线（scenario 46 项断言） |
 | **单人任务链（A3）**：`Operation/Create → Mission/Start → Mission/end → Mission/Session(202) → Abandon` | **✓✓ 实机（4 分钟任务正常撤离结算）** |
-| 除 API 主机外的主机依赖（A2） | 静态侦察 + 运行时清单已出；域名级（SNI/UDP）仍需正式抓包 |
-| 出网审计的盲区 | UDP 目的地址、本机代理隧道去向（见结项档 §2.4.3） |
+| 除 API 主机外的主机依赖（A2） | **✓✓ 运行时抓包完成**：无第二条游戏自有主机；旁路=PlayFab/EOS+EAC/Steam/Sony PC（见 [T4 文档](docs/T4-RUNTIME-EGRESS-2026-11-21.md)） |
+| 出网审计的盲区 | T4 已补：DNS/SNI/UDP 五元组（UDP 3075=PlayFab QoS、3478/3479=Steam SDR、高端口=EOS） |
 | 尚未在 mock 里还原的端点 | `Progression/inventory/consume`、`Progression/Achievements`（T3 新发现，已登记 200 `{}`；数值还原需补抓） |
