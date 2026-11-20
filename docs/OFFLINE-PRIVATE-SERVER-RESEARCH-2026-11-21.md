@@ -16,6 +16,10 @@
 工程侧 73 条抓包响应 100% 命中、时间字段按规则平移、TLS 在 Windows Schannel 与 .NET SslStream 均握手成功。
 **A1 ✓✓ / A3 ✓✓ 关闭**；A2 剩域名级清单（需管理员抓包）、A4 按边界不验。
 
+后续补测（同日）：**T4b** 未绑定 PSN 账号同样全流程可用（PSN 非必需）；**T3b** 未绑定账号跑完整单人任务 ✓✓；
+**B9** 登录体 schema 实测（437 B/9 字段 vs 346 B/6 字段），并用一次真服务器对照实验否证了
+「连过服务器就会带那三个字段」的缓存假设。
+
 ---
 
 ## 1. 本轮执行了交接档 §9 的哪些步骤
@@ -26,7 +30,7 @@
 | §9.1 读交接档 + 三份研究资料 | ✓ | API-ENDPOINTS / MISSION-CAPTURES / FINDING-零安装客机 已读并用于设计；另读 `D:\mod\out\gwe\` 的 18 组 Operation/Create、5 份 Mission/end、PUT lobby 报文 |
 | §9.2 环境自检 | ✓ | 产品版本 **0.4.3-alpha.1**（交接档快照写 0.4.1-alpha.5，已过期）；hosts 第 16 行仍指 `100.67.169.17`；无 hd2proxy / helldivers2 进程；无 TUN/UU 网卡；默认路由走以太网 `100.67.0.1` |
 | §9.3 「不需要用户操作」的部分 | ✓ | 见 §2–§4：mock 实现 + 脱敏样本 + 四道门禁 |
-| §9.4 需要用户配合的部分 | ⚠ 进行中（T1/T2 已完成，T3 待做） | T1 证书信任、T2 启动游戏/主界面、T2b 出网审计已完成（§2.4）；剩 T3 单人任务、T4 正式抓包 |
+| §9.4 需要用户配合的部分 | **✓ 全部完成** | T1 证书信任、T2/T2b 启动+出网审计、T3 单人任务、T4 正式抓包、T4b 无 PSN 对照、B9 登录体 schema（含真服务器判别实验）、T3b 未绑定账号整局 —— 见 §2.4 |
 | §9.5 产出结论文档 | ✓（位置有偏差） | 本档写在研究仓 `docs/`；**没有**写进产品仓（§9.5 说「写回本文档同目录」与开头 ⛔ 边界「禁止写入产品仓」冲突，见 §5.1） |
 
 ---
@@ -221,6 +225,27 @@ mock 绑 `100.67.169.17:443` + CRL `127.0.0.1:18081`。
 「历史账号态缓存」假设 **✗ 否证**；「PSN 绑定关系」假设 **✓ 支持（强，非绝对）**。
 详见 [B9-LOGIN-BODY-SCHEMA-2026-11-21.md](B9-LOGIN-BODY-SCHEMA-2026-11-21.md)。
 
+#### 2.4.7 T3b：**未绑定 PSN** 账号跑完整单人任务（✓✓ 实机，2026-11-21 02:23–02:33）
+
+T3 的结论只在账号 A（已绑 PSN）上验过；本项在**账号 B（未绑 PSN）**上复跑同一闭环：
+
+| 时刻 | 端点 | 请求 | 响应 | 命中 |
+|---|---|---|---|---|
+| 02:23:57 | `POST /api/Operation/Create` | 302 B | 200 / 60 B | `state:operation_create` |
+| 02:25:51 | `POST /api/Operation/Mission/Start` | 166 B | 200 / 52 B | `state:mission_start` **← 进图** |
+| 02:26:15 | `POST /api/Operation/Mission/SetMaxRewards` | 73 B | 200 / 2 B | `state:mission_max_rewards` |
+| 02:31:56 | `POST /api/Progression/inventory/consume` | 194 B | 200 / 2 B | `state:progression_consume` |
+| 02:31:56 | `POST /api/Operation/Mission/end` | 905 B | **200 / 1,617 B** | `state:mission_end` **← 结算** |
+| 02:32:02 | `PUT /api/Progression/Achievements` | 141 B | 200 / 2 B | `state:progression_achievements` |
+| 02:32:02 | `POST /api/Mission/Session` | 1,742 B | **202 / 0 B** | `state:mission_session` |
+| 02:32:44 | `POST /api/Operation/Abandon` | 27 B | 200 / 2 B | `state:operation_abandon` **← 回船** |
+
+窗口（02:23–02:39）**49 条请求、0 个 4xx/5xx、0 fallback**，回船后主界面轮询恢复正常。
+证据：`state/evidence/t3b-mission-chain-b.log`。
+
+**结论**：单人完整闭环**不依赖 PSN 绑定** —— T3（账号 A）的结论在账号 B 上复现。
+与 T3 的唯一差异是请求体大小（如 `Mission/end` 905 B vs 863 B），属局内数据（击杀/战果）动态差异，不是协议差异。
+
 ---
 
 ## 3. 关键设计（capture → replay 的本地云端）
@@ -276,7 +301,7 @@ CRL 走 **127.0.0.1:18081**，信任默认装 **`CurrentUser\Root`（非管理�
 |---|---|---|---|
 | A1 | 客户端是否接受回放登录 | **✓✓ 实机（§2.4.2 / §2.4.6）**：437 B 登录体 → 200 `sessionId` → 主界面；客户端只认 `sessionId`，**不校验登录体字段**（346 B 的未绑定账号同样通过） | —— |
 | A2 | 游戏除 API 主机外还连哪些主机 | **✓✓ 运行时抓包完成（T4，§2.4.3 尾注 + [T4 文档](T4-RUNTIME-EGRESS-2026-11-21.md)）**：无第二条游戏自有主机；外连全为 PlayFab / EOS+EAC / Steam / Sony PC 旁路 | E3/E5/E8 的细节（Party 中继动态端点、断网阻塞、PSN 专用性）仍为 ⚠ |
-| A3 | 任务中是否有服务端实时校验 | **✓✓ 实机（§2.4.5）**：整局 4 分钟，进图/局内/撤离/结算/Mission/Session(202)/Abandon 全部被接受，**无阻断性校验**；结算画面正常 | 未覆盖长任务/失败撤离/被踢分支，可再补样本 |
+| A3 | 任务中是否有服务端实时校验 | **✓✓ 实机（§2.4.5 + §2.4.7）**：账号 A 整局 4 分钟、账号 B（未绑 PSN）整局 5.5 分钟，进图/局内/撤离/结算/Mission/Session(202)/Abandon 全部被接受，**无阻断性校验**；结算画面正常 | 未覆盖长任务/失败撤离/被踢分支，可再补样本 |
 | A4 | 断网/离线 Steam 票据 | ⚠ 未证；**Steam 在线（非离线模式）即可规避**，用户已把 Steam 排除在接管范围外 | 不需要主动验，避免离线模式 |
 | A5 | 时间字段平移策略 | ✓ 工程实现 + 门禁；**✓✓ 客户端接受平移值**（主界面连续轮询 8 分钟无过期/错误） | 极端场景（跨天/事件结束）仍可再验 |
 
