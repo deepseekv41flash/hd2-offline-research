@@ -1,0 +1,31 @@
+{
+  "schema": "hd2-offline-mock-profile-v1",
+  "note": "研究线独立 profile：与 %LOCALAPPDATA%\\HD2ProxyStudio\\profiles\\default.json 无关，互不影响。",
+  "data_dir": "samples/store-season",
+  "cert_dir": "state/certs",
+  "log_dir": "state/logs",
+  "bind": {
+    "host": "100.67.169.17",
+    "port": 443,
+    "crl_port": 18081
+  },
+  "timeshift": {
+    "enabled": true,
+    "refresh_span_seconds": 604800
+  },
+  "fallback": {
+    "status": 200,
+    "body": "{}"
+  },
+  "lobby": {
+    "mode": "replay",
+    "echo_put": false
+  },
+  "mission": {
+    "keep_template_outcome": false
+  },
+  "identity": {
+    "account_id": "76561190000000000",
+    "player_name": "Helldiver"
+  }
+}
