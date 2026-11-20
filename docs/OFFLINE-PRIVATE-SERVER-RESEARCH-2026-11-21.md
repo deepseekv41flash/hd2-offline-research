@@ -9,9 +9,11 @@
 
 ## 0. 一句话结论
 
-**线 A 的工程底座已经就位并可离线复跑：73 条真实抓包响应 100% 被本地 mock 接住、时间字段按规则平移、
-任务链/大厅链状态机跑通、TLS（自签 CA + CDP/CRL + AKI）端到端可用；四道门禁全绿（见 §2）。
-但「游戏客户端是否接受这套 mock」这一步（A1/A3）仍未验证 —— 它只能在实机上验，下一节 §6 给出分步 runbook。**
+**线 A 已实机跑通「登录 → 主界面 → 稳态轮询」：官方 API 零外连，全部由本地 mock 应答（2026-11-21 01:14 首验，
+01:31 用空大厅 profile 复验）。** 工程侧 73 条真实抓包响应 100% 命中、时间字段按规则平移、TLS（自签 CA +
+CDP/CRL + AKI）在 **Windows Schannel** 与 **.NET SslStream** 两条原生链路上均握手成功；
+EAC-on 启动也照常工作。**下一步只剩 T3：单人任务链（`Operation/Create → Mission/Start → ReportPosition → Mission/end`）。**
+（A1 已 ✓✓；A3 待 T3；A2 静态侦察完成、运行时主机清单已顺手抓到一份，见 §2.4.3。）
 
 ---
 
@@ -23,21 +25,21 @@
 | §9.1 读交接档 + 三份研究资料 | ✓ | API-ENDPOINTS / MISSION-CAPTURES / FINDING-零安装客机 已读并用于设计；另读 `D:\mod\out\gwe\` 的 18 组 Operation/Create、5 份 Mission/end、PUT lobby 报文 |
 | §9.2 环境自检 | ✓ | 产品版本 **0.4.3-alpha.1**（交接档快照写 0.4.1-alpha.5，已过期）；hosts 第 16 行仍指 `100.67.169.17`；无 hd2proxy / helldivers2 进程；无 TUN/UU 网卡；默认路由走以太网 `100.67.0.1` |
 | §9.3 「不需要用户操作」的部分 | ✓ | 见 §2–§4：mock 实现 + 脱敏样本 + 四道门禁 |
-| §9.4 需要用户配合的部分 | ⚠ 待办 | §6 runbook（证书信任 → 启动游戏 → 单人任务 → 主机依赖抓取） |
+| §9.4 需要用户配合的部分 | ⚠ 进行中（T1/T2 已完成，T3 待做） | T1 证书信任、T2 启动游戏/主界面、T2b 出网审计已完成（§2.4）；剩 T3 单人任务、T4 正式抓包 |
 | §9.5 产出结论文档 | ✓（位置有偏差） | 本档写在研究仓 `docs/`；**没有**写进产品仓（§9.5 说「写回本文档同目录」与开头 ⛔ 边界「禁止写入产品仓」冲突，见 §5.1） |
 
 ---
 
 ## 2. 本轮交付与门禁证据（本机可复跑）
 
-研究仓内容：`mock/`（回放+状态机+TLS）、`tools/`（分析/脱敏/回放/控制台）、`tests/`（pytest 56 项）、
+研究仓内容：`mock/`（回放+状态机+TLS）、`tools/`（分析/脱敏/回放/控制台）、`tests/`（pytest **63** 项）、
 `profiles/`、`docs/`。**没有改动产品仓库任何文件。**
 
 ### 2.1 四道门禁（全部 PASS）
 
 | 门禁 | 命令 | 结果 |
 |---|---|---|
-| 单测 | `python -m pytest tests -q` | **56 passed in 4.82s** |
+| 单测 | `python -m pytest tests -q` | **63 passed**（阶段一为 56；T3 准备新增证书信任命令 6 项 + 空大厅/结算中性化 2 项） |
 | 离线门禁（证书→CRL→TLS→两种回放） | `python tools\mockctl.py selftest` | **SELFTEST PASS** |
 | 真实抓包 handler 回放 | `python tools\replay_client.py --src samples\store-season --mode handler` | **11/11 PASS**（73/73 命中、fallback=0、未识别时间字段=0） |
 | 脚本化启动链+任务链+大厅链 | 同上 `--mode scenario` | **46/46 PASS** |
@@ -80,6 +82,68 @@ SUMMARY mode=server: 5 passed, 0 failed, 5 total
   `sessionId` / `lobbyId` / lobby `seed`；`sample_build.py` 内含**原值残留自检**（任一原值还能在样本里
   被搜到就 `SystemExit`）；
 * `samples/`、`state/` 全部 gitignore —— 即便脱敏也不入库。
+
+### 2.4 实机验证（2026-11-21 01:10–01:32，EAC-on 正常启动）
+
+游戏环境：build `26568081`，Steam 在线，`EasyAntiCheat_EOS = Running`，hosts → `100.67.169.17`，
+mock 绑 `100.67.169.17:443` + CRL `127.0.0.1:18081`。
+
+#### 2.4.1 T1：证书信任 + 三条 Windows 原生链路（✓✓）
+
+| 检查 | 证据 |
+|---|---|
+| CA 装入 `CurrentUser\Root` | `certutil -user -addstore` exit=0；`certutil -user -verifystore Root F8388638…` exit=0；`is_trusted.CurrentUser=true` |
+| Windows **Schannel**（`curl.exe` 8.23.0 Schannel） | `GET WarId` → `{"id":801}`；`POST Login` → `{"sessionId":"…"}`；`GET Status` → 200 / 52,038 B |
+| .NET **SslStream**（`Invoke-RestMethod -NoProxy`） | WarId 与 timeSinceStart 均 200 |
+| 全量回放经 LAN IP:443 | `mode=server` **5/5 PASS**（73 条请求全成功、fallback=0） |
+
+两个踩坑（已修/已记）：
+1. `Import-Certificate` 在非交互 `powershell -NoProfile` 下报 `Cannot find drive 'Cert'` → 研究线改用系统原生
+   **`certutil`**（`trust_argv()` 纯函数 + 6 项单测）；
+2. 本 shell 有 `HTTPS_PROXY=127.0.0.1:7897`，curl 默认走代理会**直连真实服务器**（拿到官方
+   `errorCode 10002026`）→ 证书门禁必须 `--noproxy '*'`；已确认该变量**非持久**、WinHTTP 为「Direct access」。
+
+#### 2.4.2 T2：启动游戏 → 登录 → 主界面（✓✓，A1 关闭）
+
+| 观测 | 值 |
+|---|---|
+| 游戏进程 | `helldivers2`（多轮 PID：16920 / 36844 / 10048），`Responding=True`，窗口 `HELLDIVERS™ 2` |
+| 登录 | **`POST /api/Account/Login 437B -> 200 52B`** —— 437 B 与 B3 侦察的「定长 437 B」完全吻合；客户端接受 mock 的 `sessionId` |
+| 启动请求 | 34–37 个端点、40+ 条请求全部 200；`4xx/5xx=0`、`fallback=0` |
+| 主界面 | 截图确认飞船内可交互（订单/装备/社交/战备面板）；好友/Episode/Stats 周期轮询正常 |
+| 旧大厅噪声 | 首轮出现 `POST /api/lobby/<录制旧id>/member`（mock 回 `{}`，游戏容忍）→ **T3 前已改成空大厅列表** |
+
+#### 2.4.3 T2b：出网审计（180 秒 200 ms 全程序采样）
+
+采样文件（本地、gitignore）：`state/evidence/t2b-connections.jsonl`。窗口覆盖 EAC 引导 → 登录 → 主界面。
+
+**游戏/关联进程连过的全部 TCP 远端**：
+
+| 远端 | 归属 | 判定 |
+|---|---|---|
+| `100.67.169.17:443` ×4 | 本机 mock | ✅ 官方 API 的唯一去处 |
+| `127.0.0.1:7897` ×8 | 本机代理隧道（verge-mihomo） | ⚠ 本地隧道，出网由代理完成，去向不可见 |
+| `2603:1061:14:164::1:443` ×2 | Microsoft Azure IPv6 | 旁路（PlayFab/EOS 类） |
+| `32.200.4.29:443` ×2 / `44.245.124.232:443` / `100.63.145.185:443` | AWS（us-east-1 / us-west-2） | 旁路 |
+| `2600:9000:…:443` / `104.18.124.108:443` | AWS CloudFront / Cloudflare | CDN/旁路 |
+| `54.192.35.5`、`104.18.125.108`（`start_protected_game`） | CloudFront / Cloudflare | EAC 启动引导 |
+
+**真实 API 的三个 IP（公共 DNS：`68.154.14.134` / `172.200.240.121` / `172.200.240.16`）在整个窗口出现
+0 次**；mock 侧同窗口收到 41 条请求 / 34 端点、0 错误。
+
+结论口径：
+* ✅ **官方游戏服务器零交互**（登录/战况/养成/任务/大厅全由本机 mock 应答；mock 代码无上行转发、进程无出站连接）；
+* ❌ **「没往任何服务器发数据」不成立**：PlayFab（大厅/Party）、EOS/EAC、Sony RECAP、本机代理隧道仍在与外部通信
+  —— 这正是交接档 §1 划定的边界（Steam/EAC 不接管），不是泄漏，但确实有出网；
+* 盲区：UDP 目的地址 netstat 不可见（Steam SDR / EOS 中继）；代理隧道去向不可见（Verge HTTP 控制口关闭）。
+
+#### 2.4.4 T3 准备（已完成）
+
+| 改动 | 原因 | 证据 |
+|---|---|---|
+| `profiles/offline-mock.json` → `lobby.mode="empty"` | 不再把录制里的「别人的旧大厅」抛给客户端 | `/api/lobby/accounts` 响应 11,624 B(录制) → **34 B(空列表)**；`member` 调用 **0 次** |
+| `Mission/end` 结算中性化（`campaignWon/impact/othersImpact*` → 0/False） | 离线不能假装「星球已解放」 | 单测 + scenario 断言 |
+| mock 重启 + 游戏重启复验 | 保证 T3 从干净会话开始 | 01:31 复验：28 条请求、0 错误、登录 437 B |
 
 ---
 
@@ -132,11 +196,11 @@ CRL 走 **127.0.0.1:18081**，信任默认装 **`CurrentUser\Root`（非管理�
 
 | # | 未知 | 现状 | 还缺什么 |
 |---|---|---|---|
-| A1 | 客户端是否接受回放登录 | ⚠ 未证（mock 已能返回合法 sessionId；**游戏是否买账要实机**） | §6 T2 |
-| A2 | 游戏除 API 主机外还连哪些主机 | ✓ 静态侦察完成，见 [A2-HOST-DEPENDENCIES-2026-11-21.md](A2-HOST-DEPENDENCIES-2026-11-21.md)：明文里**没有第二条游戏自有 HTTP API**（`thehelldiversgame` 在 exe/runtime.dll/game.dll/全部 dll/bundle 明文 0 命中；bundle 已压缩，静态不能证否）；确认活跃旁路 = Steam 网络（边界外）、PlayFab Party（`974A9.playfabapi.com` 推导）、EOS、Sony RECAP（`upload.recap.tools` ✓✓ 实机 200） | §6 T4（运行时 DNS/SNI/连接快照） |
-| A3 | 任务中是否有服务端实时校验 | ⚠ 未证（mock 侧 `Mission/Session`→202、`ReportPosition`→200、`Mission/end`→模板结算均已备） | §6 T3 |
+| A1 | 客户端是否接受回放登录 | **✓✓ 实机（§2.4.2）**：437 B 登录体 → 200 `sessionId` → 主界面；客户端只认 `sessionId`，不校验其它字段 | —— |
+| A2 | 游戏除 API 主机外还连哪些主机 | ✓ 静态侦察完成（见 [A2-HOST-DEPENDENCIES-2026-11-21.md](A2-HOST-DEPENDENCIES-2026-11-21.md)）；**运行时首份清单已抓到**（§2.4.3：Azure/AWS/CloudFront/Cloudflare + 本机代理隧道；真实 API IP 0 命中） | 若要域名级清单（SNI/UDP）仍需 T4 正式抓包（需管理员） |
+| A3 | 任务中是否有服务端实时校验 | ⚠ 未证（mock 侧 `Mission/Session`→202、`ReportPosition`→200、`Mission/end`→模板结算均已备） | **T3（下一步）** |
 | A4 | 断网/离线 Steam 票据 | ⚠ 未证；**Steam 在线（非离线模式）即可规避**，用户已把 Steam 排除在接管范围外 | 不需要主动验，避免离线模式 |
-| A5 | 时间字段平移策略 | ✓ 工程实现 + 门禁（两份真实抓包未识别字段=0；变异测试证明门禁会红） | 客户端是否认可平移后的值（含 A1） |
+| A5 | 时间字段平移策略 | ✓ 工程实现 + 门禁；**✓✓ 客户端接受平移值**（主界面连续轮询 8 分钟无过期/错误） | 极端场景（跨天/事件结束）仍可再验 |
 
 **A2 的净结论（对线 A 很重要）**：真正需要 mock 的仍然**只有那一个 API 主机**；
 其它旁路（PlayFab/EOS/Steam/Sony）只需「断网时不阻塞登录/进图」，这必须靠 §6 T4 的运行时观测定性，
@@ -194,6 +258,7 @@ hosts 第 16 行仍指向 `100.67.169.17`（产品 `install` 的残留），而�
 
 > 用户授权纪律：涉及系统改动（证书信任、启动游戏、抓包）的步骤**先说明动作与风险，得到确认后再执行**。
 > 预计：T1 约 5 分钟；T2 约 10–15 分钟；T3 约 20–30 分钟；T4 可并入 T2/T3。
+> **进度（2026-11-21 01:32）：T0/T1/T2/T2b ✅ 已完成；下一项 = T3；T4 正式抓包待定（需管理员）。**
 
 ### T0 预检（无风险）
 
@@ -206,7 +271,7 @@ python tools\mockctl.py cert-status --check-trust   # 当前证书 + 是否已�
 ```
 判据：`target:443` 与 `18081` free；产品引擎未运行；hosts 仍指向本机 LAN IP。
 
-### T1 证书信任 + Schannel 验证（**需批准**；非管理员、可逆）
+### T1 证书信任 + Schannel 验证（✅ 已完成 2026-11-21 01:13；非管理员、可逆）
 
 动作：把研究 CA 装进 `CurrentUser\Root`（只影响当前用户，不改 LocalMachine；卸载用 `cert-uninstall`）。
 风险：该用户下任何程序都会暂时信任这张 CA（CA 私钥已在签发后删除，无法再签别的域名；
@@ -227,7 +292,7 @@ curl.exe -v --resolve api.live.prod.thehelldiversgame.com:443:100.67.169.17 `
 失败处置：curl 报 `CRYPT_E_NO_REVOCATION_CHECK` ⇒ CRL 没取到（确认 18081 在听、CDP 是 18081）；
 `SSL certificate problem` ⇒ 信任未装/装到了别的用户；mock 日志无请求 ⇒ 443 被别的进程占用。
 
-### T2 启动游戏 → 进主界面（A1，**需批准**）
+### T2 启动游戏 → 进主界面（A1，✅ 已完成 2026-11-21 01:31，三次启动均通过）
 
 前置：mock 在跑（T1 已起）；Steam **在线**（不要用离线模式）；hosts 不变。
 动作：正常启动 Helldivers 2，观察 `state\logs\mock.log`。
@@ -245,7 +310,7 @@ curl.exe -v --resolve api.live.prod.thehelldiversgame.com:443:100.67.169.17 `
 * 报「数据过期/无法连接任务」⇒ 看 `health.unknown_time_fields`（应空）与 `last_shift`；
 * 记录现场：`state\logs\mock.log` 片段 + `health` JSON。
 
-### T3 单人任务链（A3）
+### T3 单人任务链（A3，**下一项**）
 
 前置：T2 已进主界面。动作：星图选星球 → 开始任务 → 打完/撤离。
 判据：mock 日志依次出现 `Operation/Create → Mission/Start →（局内 ReportPosition 周期调用）→

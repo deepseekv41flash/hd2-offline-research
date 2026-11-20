@@ -53,9 +53,10 @@ def test_mission_start_and_end_chain():
     assert out["missionId"] == mid
     assert out["rewards"] == [{"mixId": 1, "amount": 2}]
     assert out["progressionPackageUpdates"][0]["platformAccountId"] == st.account_id
-    # 离线默认不假装社区战果
+    # 离线默认不假装社区战果（模板里 campaignWon/impact/othersImpact 是抓包当时别人的成绩）
     assert out["othersImpactPlanet"] == 0
     assert out["othersImpactPlanetEvent"] == 0
+    assert out["campaignWon"] is False
     # 作战里 mission 标记完成，全部完成后 isActive=False
     op = st.operation_list()["operations"][0]
     assert op["missions"][0]["missionId"] == mid

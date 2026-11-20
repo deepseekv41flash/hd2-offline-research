@@ -263,14 +263,36 @@ def preflight(cert_dir: Path | str, *, host: str = DEFAULT_HOST) -> list[str]:
 
 
 # ---- Windows 信任存储（只在 mockctl 里显式调用；不自动执行） ------------------
-def _ps(cmd: str) -> str:
-    proc = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
-        capture_output=True, text=True, timeout=60,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"PowerShell 失败({proc.returncode}): {proc.stderr.strip()[:500]}")
-    return proc.stdout.strip()
+# 用系统原生 `certutil`，不用 PowerShell `Import-Certificate`：
+# 后者在 `powershell -NoProfile -NonInteractive` 下会出现 "Cannot find drive 'Cert'"（实测 2026-11-21），
+# 而 certutil 无此依赖，且退出码可直接当判据。
+
+def _certutil(scope: str) -> list[str]:
+    """certutil 的 scope 前缀：CurrentUser → `-user`；LocalMachine → 无（需管理员）。"""
+    return ["certutil", "-user"] if scope.lower() == "currentuser" else ["certutil"]
+
+
+def trust_argv(cert_dir: Path | str, thumbprint: str, scope: str = "CurrentUser",
+               action: str = "install") -> list[str]:
+    """构造 certutil 命令（纯函数，便于单测）。
+
+    action: install | check | uninstall
+    """
+    base = _certutil(scope)
+    cer = str(Path(cert_dir).resolve() / "ca.cer")
+    suffix = ["-f", "Root", cer]
+    if action == "install":
+        return base + ["-addstore"] + suffix
+    if action == "check":
+        return base + ["-verifystore", "Root", thumbprint]
+    if action == "uninstall":
+        return base + ["-delstore", "Root", thumbprint]
+    raise ValueError(f"未知 action: {action}")
+
+
+def _certutil_run(argv: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(argv, capture_output=True, text=True, timeout=60,
+                          encoding="utf-8", errors="replace")
 
 
 def is_trusted(cert_dir: Path | str, scope: str = "CurrentUser") -> bool | None:
@@ -281,8 +303,8 @@ def is_trusted(cert_dir: Path | str, scope: str = "CurrentUser") -> bool | None:
     if not thumb:
         return None
     try:
-        out = _ps(f"if (Test-Path 'Cert:\\{scope}\\Root\\{thumb}') {{ 'yes' }} else {{ 'no' }}")
-        return out.strip().lower() == "yes"
+        proc = _certutil_run(trust_argv(cert_dir, thumb, scope, "check"))
+        return proc.returncode == 0
     except Exception:  # noqa: BLE001
         return None
 
@@ -294,17 +316,18 @@ def install_trust(cert_dir: Path | str, scope: str = "CurrentUser") -> dict:
     if not cer.exists():
         raise FileNotFoundError(f"缺少 {cer}（先跑 cert-gen）")
     meta = load_meta(out) or {}
+    thumb = meta.get("trust_thumbprint_sha1", "")
     before = is_trusted(out, scope)
     if before is True:
-        return {"scope": scope, "action": "already-trusted",
-                "thumbprint": meta.get("trust_thumbprint_sha1")}
-    _ps(f"Import-Certificate -FilePath '{cer}' -CertStoreLocation 'Cert:\\{scope}\\Root' "
-        f"| Out-Null")
+        return {"scope": scope, "action": "already-trusted", "thumbprint": thumb}
+    proc = _certutil_run(trust_argv(out, thumb, scope, "install"))
+    if proc.returncode != 0:
+        raise RuntimeError(f"certutil 导入失败({proc.returncode}): "
+                           f"{(proc.stdout + proc.stderr).strip()[-400:]}")
     after = is_trusted(out, scope)
     if after is not True:
         raise RuntimeError(f"导入后仍查不到信任（scope={scope}）")
-    return {"scope": scope, "action": "installed",
-            "thumbprint": meta.get("trust_thumbprint_sha1"),
+    return {"scope": scope, "action": "installed", "thumbprint": thumb,
             "subject": meta.get("ca_subject"), "not_after": meta.get("not_after")}
 
 
@@ -314,8 +337,10 @@ def uninstall_trust(cert_dir: Path | str, scope: str = "CurrentUser") -> dict:
     thumb = meta.get("trust_thumbprint_sha1")
     if not thumb:
         raise RuntimeError("session.json 里没有 trust_thumbprint_sha1")
-    _ps(f"Get-ChildItem 'Cert:\\{scope}\\Root' | "
-        f"Where-Object {{ $_.Thumbprint -eq '{thumb}' }} | Remove-Item -Force")
+    proc = _certutil_run(trust_argv(out, thumb, scope, "uninstall"))
+    if proc.returncode != 0:
+        raise RuntimeError(f"certutil 删除失败({proc.returncode}): "
+                           f"{(proc.stdout + proc.stderr).strip()[-400:]}")
     return {"scope": scope, "action": "removed", "thumbprint": thumb,
             "trusted_after": is_trusted(out, scope)}
 

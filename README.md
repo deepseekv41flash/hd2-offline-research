@@ -105,7 +105,10 @@ python tools\replay_client.py --src samples\store-season --mode server `
 | 项 | 状态 |
 |---|---|
 | 73 条真实抓包全部被 mock 接住（fallback=0）、时间字段全部有规则 | ✓ 离线（可复跑） |
-| TLS（自签 CA + CDP/CRL + AKI）端到端、含负面对照 | ✓ 离线（Python 客户端） |
+| TLS（自签 CA + CDP/CRL + AKI）：Python 客户端 + **Windows Schannel + .NET SslStream** | ✓✓ 实机（2026-11-21） |
+| **游戏客户端接受这套 mock（A1）**：`POST /api/Account/Login 437B -> 200 sessionId` → 主界面 | **✓✓ 实机（EAC-on 也通过）** |
+| 官方 API 零外连（180s 全程序连接采样：真实 API IP 0 命中，只有本机 mock） | ✓✓ 实机（详见结项档 §2.4.3） |
 | 任务链 / 大厅链状态机（含 Create 回显、connectionString 原样转发） | ✓ 离线（scenario 46 项断言） |
-| 游戏客户端是否接受这套 mock（A1）/ 任务中服务端校验（A3） | **⚠ 未证 —— 需实机** |
-| 除 API 主机外的主机依赖（A2） | 静态存量结论见 docs/A2 文档；**运行时仍需抓一次** |
+| 单人任务链端到端（A3：能否进图/结算） | **⚠ 未证 —— T3 待做** |
+| 除 API 主机外的主机依赖（A2） | 静态侦察 + 首份运行时清单已出；域名级（SNI/UDP）仍需正式抓包 |
+| 出网审计的盲区 | UDP 目的地址、本机代理隧道去向（见结项档 §2.4.3） |

@@ -249,11 +249,16 @@ class MockState:
             if isinstance(upd, dict):
                 upd["platformAccountId"] = self.account_id
         if not self.keep_template_outcome:
-            # 离线：不要假装社区战果（模板里的 othersImpact 是抓包当时别人的贡献）
+            # 离线：不要假装社区战果（模板里的 othersImpact/campaignWon/impact 是抓包当时别人的成绩，
+            # 单人离线时原样返回会让 UI 以为「星球已解放」。奖励/经验保留，只清社区侧字段）
             for k in ("othersImpactPlanet", "othersImpactCommunityTarget",
                       "othersImpactPlanetEvent"):
                 if k in out:
                     out[k] = 0
+            if "campaignWon" in out:
+                out["campaignWon"] = False
+            if "impact" in out:
+                out["impact"] = 0
 
         op = self.operations.get(op_id)
         if op:

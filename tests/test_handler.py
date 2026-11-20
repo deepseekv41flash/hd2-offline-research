@@ -111,6 +111,19 @@ def test_health_reports_state(synthetic_capture: Path):
     assert doc["war_clock_now"] == 1_000_000 + d
 
 
+def test_lobby_empty_mode_returns_no_recorded_lobbies(synthetic_capture: Path):
+    """离线单机 profile（lobby.mode=empty）：不能把录制里的旧大厅抛给客户端。"""
+    h = build(synthetic_capture, profile={"lobby": {"mode": "empty"}})
+    r = h.handle("GET", "/api/lobby/accounts")
+    doc = r.json()
+    assert r.source.startswith("state:lobby_accounts:empty")
+    assert doc == {"accountLobbies": [], "lobbies": []}
+    # 即使本地存了厅，empty 模式仍然只给空列表
+    h.handle("PUT", "/api/lobby",
+             json.dumps({"lobbyId": "x", "players": [{"memberAccountId": "1", "isHost": True}]}).encode())
+    assert h.handle("GET", "/api/lobby/accounts").json()["lobbies"] == []
+
+
 def test_lobby_state_takes_over_after_put(synthetic_capture: Path):
     h = build(synthetic_capture)
     # replay 模式且本地没有大厅时：按设计退回抓包响应

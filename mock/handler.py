@@ -209,6 +209,10 @@ class MockHandler:
                 return self._json(lobby if echo else {}, source=src)
             if name == "lobby_accounts":
                 mode = self.profile["lobby"].get("mode", "replay")
+                if mode == "empty":
+                    # 离线单机：不返回录制里的「别人的旧大厅」，否则客户端会尝试加入不存在的厅
+                    return self._json({"accountLobbies": [], "lobbies": []},
+                                      source=src + ":empty")
                 if mode == "state" or st.lobbies:
                     return self._json(st.lobby_accounts(), source=src)
                 match = self.index.lookup(method, raw_path)
