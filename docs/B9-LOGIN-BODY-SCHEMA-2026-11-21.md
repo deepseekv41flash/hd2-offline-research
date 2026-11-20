@@ -1,6 +1,7 @@
 # B9 — 登录体真实 schema 对照（437 B vs 346 B）`✓✓`
 
-> 日期：2026-11-21 02:03–02:09 ｜ 环境：离线 mock（`100.67.169.17:443`）+ 研究 CA + hosts 接管
+> 日期：2026-11-21 02:03–02:21 ｜ 环境：离线 mock（`100.67.169.17:443`）+ 研究 CA + hosts 接管；
+> 含一次**真服务器对照实验**（02:17–02:21，用透明 TCP 转发，详见 §4.3）
 > 采集纪律：只记 **字段名 / 长度 / 字符类 / sha8**，**不落任何原值**；产物在 `state/evidence/b9/`（gitignore）
 > 对账工具：`tools/compare_shapes.py`；存证 `state/evidence/b9/compare.txt`
 
@@ -9,6 +10,9 @@
 **437 B 与 346 B 的 91 B 差异，来自账号 A 多带 3 个可选账号态字段（`isSuspended` / `isBanned` / `betaToolkitAccountId`）；
 登录票据 `token` 两个账号都是 116 字符、其余字段长度完全相同——差异与票据长度无关。**
 B3 侦察里「437 B 定长 ⇒ 单票据定长」的推断**被推翻**（见 §4）。
+
+**这三个字段与"是否连过真服务器"无关**：让账号 B 真登录官方服务器一次后再抓，body 仍是 346 B
+（`delta = 0`，见 §4.3）⇒ 「历史账号态缓存」假设 **✗ 否证**，「PSN 绑定关系」假设 **✓ 支持（强，非绝对）**。
 
 ## 1. 方法：schema 采集开关
 
@@ -112,28 +116,67 @@ curl.exe --noproxy "*" -sk -X POST https://100.67.169.17:443/api/Account/Login \
 
    | 文件 | 大小 | 字段名命中 | 值 hash 命中 |
    |---|---|---|---|
-   | `%APPDATA%\Arrowhead\Helldivers2\saves\a50da53b1ab77c2f_user_settings.config` | 1472 B | 0 | 0 |
-   | `%APPDATA%\Arrowhead\Helldivers2\saves\c0b8c67f93500302_user_settings.config` | 1489 B | 0 | 0 |
+   | `%APPDATA%\Arrowhead\Helldivers2\saves\<A>::user_settings.config`（文件名含账号派生 hash，已遮蔽） | 1472 B | 0 | 0 |
+   | `%APPDATA%\Arrowhead\Helldivers2\saves\<B>::user_settings.config` | 1489 B | 0 | 0 |
    | `E:\Steam\userdata\<A>\553850\remote\testament_new.sav` | 9179 B | 0 | 0 |
    | `E:\Steam\userdata\<B>\553850\remote\testament_new.sav` | 3041 B | 0 | 0 |
 
    ⇒ 若由本地承载，则承载者只能是**加密/二进制容器**（`.sav` 未解密，不能排除），不在明文配置里。
 
-### 4.2 两个竞争归因（排序 + 判别实验）
+### 4.2 两个竞争归因（判别实验已做，见 §4.3）
 
 | 假设 | 内容 | 支持 | 反对 | 状态 |
 |---|---|---|---|---|
-| **H1 账号绑定态**（首选） | 账号在 PSN / HD2 后端有真实账号记录时，客户端从本地 **Sony testament（PSN PC SDK）** 缓存读出 `betaToolkitAccountId`（19 位数字，与 PSN account id 形态一致）及两个布尔标志；未绑定账号无此缓存 ⇒ 字段整体省略 | ①唯一区别就是"是否绑 PSN"；②`testament_new.sav` 正是按账号分文件（A 9179 B / B 3041 B）；③19 位纯数字形态与 PSN account id 相容 | 无直接证据（`.sav` 加密，取不出值） | **⚠ 未证（首选）** |
-| **H2 历史账号态缓存** | 客户端缓存"上次由真服务器下发的账号对象"（挂起/封禁标志 + 账号 id），登录时回传；新账号第一次连真服务器后才会有 | 语义上更自然（服务端权威数据被客户端回传）；账号 B 是全新账号、从未连过真服务器；mock 的合成响应不含这些字段 ⇒ B 永远拿不到 | 无法解释为何要客户端回传权威状态；本机明文无缓存 | **⚠ 未证** |
+| **H1 账号绑定态** | 账号在 PSN / HD2 后端有真实账号记录并绑定 PSN 时，客户端从本地 **Sony testament（PSN PC SDK）** 缓存读出 `betaToolkitAccountId`（19 位数字，与 PSN account id 形态一致）及两个布尔标志；未绑定账号无此缓存 ⇒ 字段整体省略 | ①唯一区别就是"是否绑 PSN"；②`testament_new.sav` 正是按账号分文件；③19 位纯数字形态与 PSN account id 相容；④§4.3 实验：真登录一次不会带来这三个字段 | 无直接证据（`.sav` 加密，取不出值）；未做"给 B 绑 PSN"的正向对照 | **✓ 支持（强，非绝对）** |
+| **H2 历史账号态缓存** | 客户端缓存"上次由真服务器下发的账号对象"（挂起/封禁标志 + 账号 id），登录时回传；账号只要连过一次真服务器就会有 | 语义上更自然（服务端权威数据被客户端回传）；账号 B 最初是全新账号、从未连过真服务器 | **§4.3 实验直接否证最简形式**：B 真登录官方服务器一次后，下次启动**仍是 346 B** | **✗ 否证** |
 
-**可判定实验（未做，需用户同意）**：把账号 B 正常登录一次**真服务器**（临时摘掉 hosts 行 → 启动→退出 → 恢复 hosts），
-然后用 mock 再抓一次 B 的登录体：
+### 4.3 判别实验（2026-11-21 02:17–02:21，已完成）：让账号 B 真登录官方服务器一次
 
-* 若变成 437 B（出现三字段）⇒ **H2 成立**（与 PSN 绑定无关，是"有没有账号态"）；
-* 若仍 346 B ⇒ **H1 成立**（绑定态决定，与真服务器接触无关）。
+**不改 hosts**（写 hosts 需要管理员，本会话非提权）。改用 `tools/tcp_passthrough.py`：停掉 mock，
+在同一 `100.67.169.17:443` 上做**透明 TCP 转发**到真服务器 `172.200.240.121:443`。
+转发器不终止 TLS、不落明文，只统计字节数。
 
-代价：一次真实联网登录（约 2–3 min）+ hosts 行两次增删；收益：把 `⚠` 收成 `✓✓`。
-**本轮不做**：离线研究线刻意不向真服务器发请求（T4 的核心结论就是"官方 API 只连 mock"），该实验属于新增联网动作。
+**先证明转发的确实是真的官方服务器**（不是 mock）：
+
+```
+subject: {'commonName': 'api.live.prod.thehelldiversgame.com'}
+issuer : {'countryName': 'US', 'organizationName': "Let's Encrypt", 'commonName': 'YR2'}
+notAfter: Dec 27 02:26:34 2026 GMT
+```
+
+（研究 CA 是自签 + 48 h；这是 **Let's Encrypt** 签发的真证书 ⇒ TLS 端到端到官方服务器。）
+
+**会话统计**（`state/evidence/b9/real-passthrough.log`）：
+
+| 项 | 值 |
+|---|---|
+| 连接数 | 12 |
+| 上行合计 | 37,564 B |
+| 下行合计 | 232,843 B（单连接最大 94,299 B —— 与 mock 里 `warinfo` 83,609 B 量级吻合，说明真登录成功并拉到真实战况） |
+| 游戏 | 真登录后正常到主界面，**优雅退出**（WM_CLOSE，4 s 内退出，保证缓存能落盘） |
+| 真登录后本地落盘 | `<B>::user_settings.config`（2:18:14）、`testament_new.sav` 2,901 B（2:20:25） |
+
+**然后切回 mock，再启动账号 B，抓第 4 份登录体**（`02:21:06`）：
+
+```
+A = B after real login  (346 B, 6 fields)
+B = B before real login (346 B, 6 fields)
+delta = A - B = 0 B
+[字节对账] 按 schema 重建: A=346 B=346 -> MATCH
+[共同且一致的字段] 6: buildIdentifier, publicKey, platform, instanceId, token, clientVersion
+```
+
+⇒ **H2 的最简形式被否证**：账号在官方服务器上有了记录（真登录成功）之后，客户端**依然**只发 6 个字段。
+⇒ **H1 获得支持**：差异只能来自账号侧的**绑定关系**（PSN 关联），而不是"有没有连过真服务器"。
+
+**这次实验的边界（诚实标注）**：
+
+* 未做"给账号 B 绑定 PSN"的正向对照（那要动用户的 PSN 账号，超出本轮授权）——所以 H1 记 **✓（强支持）** 而非 ✓✓；
+* 只覆盖"登录到主界面 + 停留约 2 分钟"；若缓存需要更特殊条件（例如完整打一局、或首次 21:9 教学流程）才落盘，本实验未覆盖；
+* 但"普通真登录一次"这一最简形式已被直接排除，这足以判定差异**不是**由"连过官方服务器"引起的。
+
+**实验的现场复原**：hosts 行全程未改动（`100.67.169.17 api.live.prod.thehelldiversgame.com # hd2proxy`），
+转发器已停止，mock 已恢复监听 443 + 18081 并继续正常服务（02:21 会话 39 请求 / 0 非 200 / 0 fallback）。
 
 ### 4.3 为什么这条结论对离线 mock 有价值 `✓✓`
 
@@ -150,7 +193,8 @@ curl.exe --noproxy "*" -sk -X POST https://100.67.169.17:443/api/Account/Login \
 | `token` 与账号绑定状态无关（恒 116 字符 ascii） | **✓✓ 实机** | 两次 B 样本 + A 样本 |
 | 91 B = 82 B（字段本体）+ 9 B（分隔符风格） | **✓✓ 实机** | `tools/compare_shapes.py` 对账 + 归因 sum_check |
 | 三字段的值来自本地账号态而非本次网络回读 | **✓✓ 实机** | §4.1 时序证据（登录是本进程首个 POST）+ 登录响应仅 `sessionId` |
-| 三字段的最终来源是 PSN 绑定态还是历史真服务器缓存 | **⚠ 未证** | §4.2 两个假设都可解释现状；判别实验未做 |
+| **"真登录官方服务器一次"会让三字段出现**（H2 最简形式） | **✗ 否证** | §4.3 实验：B 真登录成功（232 KB 真实数据）后仍 346 B，`delta = 0` |
+| 三字段与账号的 **PSN 绑定关系**相关（H1） | **✓ 支持（强，非绝对）** | §4.3 排除"连过真服务器"；三字段仅在绑定账号出现；19 位数字形态与 PSN account id 相容。未做"给 B 绑 PSN"正向对照 |
 | 离线 mock 无需伪装这三个字段 | **✓✓ 实机** | 两种 body 均 200，两账号均进主界面 |
 | 本地明文配置/存档承载这三字段 | **✗ 否证** | §4.1 三、文件名/值 hash 均 0 命中（加密容器仍可能，故整体来源仍 ⚠） |
 
@@ -176,5 +220,21 @@ python tools\compare_shapes.py state\evidence\b9\<A>.json state\evidence\b9\<B>.
 
 1. **客户端 body 序列化风格**：`", "` + `" : "` + 结尾换行（紧凑 JSON 会是 328 B / 410 B，实测 346 B / 437 B）。
    将来若 mock 需要**构造**登录体或其它请求体来骗过客户端校验，按此风格生成才与真实字节数一致。
-2. **`instanceId` 是机器级安装 id**：账号 A、账号 B、三次会话全部 sha8 `4d874b74` ⇒ 与账号无关，
+2. **`instanceId` 是机器级安装 id**：账号 A、账号 B、四次会话全部 sha8 `4d874b74` ⇒ 与账号无关，
    不能当账号标识使用（会话内稳定、跨账号相同）。
+
+## 8. 附带产出：透明 TCP 转发工具（判别实验用）
+
+`tools/tcp_passthrough.py`：把本机某 `IP:port` 上的 TCP 流原样转给真实后端，**不终止 TLS、不落明文**，
+只统计"连接数/上行字节/下行字节"。用途：在不改 hosts（无需管理员）的前提下，临时让客户端连真服务器做对照实验。
+
+```powershell
+# 停 mock 后，用同一地址/端口转发到官方 API（TLS 端到端到真服务器）
+python tools\tcp_passthrough.py --listen 100.67.169.17:443 --upstream 172.200.240.121:443 `
+  --log state\evidence\b9\real-passthrough.log
+```
+
+判据：客户端侧拿到的证书应是公共 CA 签发给 `api.live.prod.thehelldiversgame.com`（本轮实测 Let's Encrypt YR2）；
+若拿到的是研究 CA 自签证书，说明 mock 还在跑、转发没生效。
+
+单测：`python -m pytest tests/test_tcp_passthrough.py -q`（2 项：字节原样往返 + 上游不可达时干净关闭）。

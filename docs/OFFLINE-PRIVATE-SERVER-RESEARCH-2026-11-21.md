@@ -33,14 +33,14 @@
 
 ## 2. 本轮交付与门禁证据（本机可复跑）
 
-研究仓内容：`mock/`（回放+状态机+TLS）、`tools/`（分析/脱敏/回放/控制台）、`tests/`（pytest **75** 项）、
+研究仓内容：`mock/`（回放+状态机+TLS）、`tools/`（分析/脱敏/回放/控制台）、`tests/`（pytest **77** 项）、
 `profiles/`、`docs/`。**没有改动产品仓库任何文件。**
 
 ### 2.1 四道门禁（全部 PASS）
 
 | 门禁 | 命令 | 结果 |
 |---|---|---|
-| 单测 | `python -m pytest tests -q` | **75 passed**（B9 新增：`test_bodycapture.py` 6 项 + `test_compare_shapes.py` 4 项 + TLS 端到端 schema 采集 1 项） |
+| 单测 | `python -m pytest tests -q` | **77 passed**（B9 新增：`test_bodycapture.py` 6 + `test_compare_shapes.py` 4 + `test_tcp_passthrough.py` 2 + TLS 端到端 schema 采集 1） |
 | 离线门禁（证书→CRL→TLS→两种回放） | `python tools\mockctl.py selftest` | **SELFTEST PASS** |
 | 真实抓包 handler 回放 | `python tools\replay_client.py --src samples\store-season --mode handler` | **11/11 PASS**（73/73 命中、fallback=0、未识别时间字段=0） |
 | 脚本化启动链+任务链+大厅链 | 同上 `--mode scenario` | **46/46 PASS** |
@@ -215,7 +215,10 @@ mock 绑 `100.67.169.17:443` + CRL `127.0.0.1:18081`。
 
 ⇒ **✗ 否证**「Steam 票据长度随账号变」：票据长度恒定，差异全在 3 个可选字段。
 ⇒ **✓✓** mock 不校验登录体，346 B / 437 B 都 200 + `sessionId`，**不需要伪装这三个字段**。
-⇒ `⚠ 未证`：三字段最初来自「PSN 绑定态」还是「历史真服务器下发的账号态缓存」（判别实验未做）。
+⇒ `⚠ 未证` → **已判别**：让账号 B 真登录官方服务器一次（用 `tools/tcp_passthrough.py` 透明转发到真 API，
+不改 hosts；实测 TLS 证书为 Let's Encrypt 签发给该域名的真证书，会话下行 232 KB），
+再切回 mock 抓登录体 —— **仍是 346 B，`delta = 0`**：
+「历史账号态缓存」假设 **✗ 否证**；「PSN 绑定关系」假设 **✓ 支持（强，非绝对）**。
 详见 [B9-LOGIN-BODY-SCHEMA-2026-11-21.md](B9-LOGIN-BODY-SCHEMA-2026-11-21.md)。
 
 ---
@@ -457,7 +460,7 @@ python tools\sample_build.py --src D:\mod\tmp\capture-store-season-20261118\raw 
   --dst samples\store-season --mission-end-src D:\mod\out\gwe
 
 # 门禁
-python -m pytest tests -q                                          # 75 passed
+python -m pytest tests -q                                          # 77 passed
 python tools\mockctl.py selftest                                   # SELFTEST PASS
 python tools\replay_client.py --src samples\store-season --mode handler   # 11/11
 python tools\replay_client.py --src samples\store-season --mode scenario  # 46/46
