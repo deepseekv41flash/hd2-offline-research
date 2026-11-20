@@ -21,6 +21,11 @@
     "mode": "empty",
     "echo_put": false
   },
+  "body_shapes": {
+    "enabled": false,
+    "dir": "state/evidence/b9",
+    "paths": ["/api/Account/Login"]
+  },
   "mission": {
     "keep_template_outcome": false
   },

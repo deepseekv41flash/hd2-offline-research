@@ -7,6 +7,11 @@
 > 玩家名 的完整原值。只给骨架、长度、字符集与稳定性结论。结构常量（如 `cv2`、`r-20260323`、`619689`）
 > 不是按大厅/按玩家变化的敏感值，保留以便工程使用。
 
+> ⚠ **2026-11-21 02:09 回填（B9 实测）**：本文 §3.3 关于登录体的推断已被实测推翻——
+> 登录 body 是 **6/9 字段 JSON**（`buildIdentifier`/`publicKey`/`platform`/`instanceId`/`token`/`clientVersion`
+> [+ 绑定账号多 3 个可选字段]），`token` 恒 116 字符，**"437 B 定长"只是因为样本全来自同一个绑定账号**，
+> 不是"票据定长"。详见 `B9-LOGIN-BODY-SCHEMA-2026-11-21.md`，本文 §3.3/§6 的具体更正见文末「B9 回填」。
+
 ---
 
 ## 0. 一句话结论
@@ -19,9 +24,11 @@
 2. **6 位数字**：全样本恒定 `619689`，最可能是 **PlayFab TitleId 的十进制写法 = `0x974A9` = `974A9`**；
    外部证据：HD2（Steam AppID 553850）玩家机曾对 **`974a9.playfabapi.com`** 报 DNS 解析超时。
 3. **B3**：登录 body 本地**没有落盘样本**（抓包白名单/代理设计都不存 login body）；62 次带长度日志的
-   登录请求**全部 437 B**（定长 → 票据字段定长）。`helldivers2.exe` 同时存在
+   登录请求**全部 437 B**。~~（定长 → 票据字段定长）~~ —— **该推断已由 B9 推翻**：437 B 是「绑定账号」
+   的定长形态，未绑定账号是 346 B，差异全在 3 个可选字段，`token` 两账号都是 116 字符。
+   `helldivers2.exe` 同时存在
    `GetAuthSessionTicket` 与 `GetAuthTicketForWebApi` 两条取票路径，`EncryptedAppTicket` 无使用证据。
-   按尺寸反推更像**会话票据（session ticket）**；但 body schema 仍是 `⚠ 未证`。
+   票据类型判断（更像会话票据）**保留**，但"按尺寸反推票长"这条论证作废。
 4. **B3 建议**：自建私服**不要解析票据**——登录响应本来就只有一个 `sessionId`，按 IP/预配置表把会话
    映射到自造 `accountId` 即可；要真验票必须拿到 AppID 553850 的 Steamworks **partner publisher key**
    （`ISteamUserAuth/AuthenticateUserTicket`），当前不可得。
@@ -365,7 +372,7 @@ C++ 参考：<https://learn.microsoft.com/en-us/gaming/playfab/multiplayer/lobby
 |---|---|---|
 | P0 | B8：自建信令接管 `/api/lobby*` 后，客机执行入厅是否仍走向 PlayFab 并成功 | 客机侧出现 `Lobby joined (lobby_id=…, connection_string=…)` 且 `numLobbyMembers` 增加；失败则记录 PlayFab 错误码/超时 |
 | P0 | B1（交接档原有）：同 Steam 平台上双机 + 自建信令能否互相看见大厅并加入 | 两台客户端 `PUT/GET /api/lobby` 状态互通 + 实机进同一局 |
-| P1 | B9：抓 1 次 login body（脱敏） | 能写出字段名清单 + 票据串长度/编码形态（hex? base64?）+ 是否含 accountId/token 字段 |
+| P1 | ~~B9：抓 1 次 login body（脱敏）~~ **已做（2026-11-21 02:09）** | ✅ 字段名清单 / 长度 / 字符类已拿到（6 字段 + 绑定账号多 3 个），见 `B9-LOGIN-BODY-SCHEMA-2026-11-21.md` |
 | P1 | B8 的前置：确认 HD2 PlayFab 标题是否仍响应（无需游戏） | 用与游戏一致的 host 名做 DNS/HTTPS 探测，记录状态码/错误体（注意：不可用「随机 TitleId」做反证，Front Door 会先 401） |
 | P2 | B10：找 `playfab` 运行时开关 | 若有：关掉后 `network.cpp` 不再要求 PlayFab login，且会话改用平台层 |
 | P2 | B2 的字段语义补全（`.r-` / `kv1` / `619689` 的官方定义） | 能拿到 PlayFab 内部格式说明或反推证据（非必需） |
@@ -455,3 +462,21 @@ C++ 参考：<https://learn.microsoft.com/en-us/gaming/playfab/multiplayer/lobby
 * 没有写除本文件以外的任何文件；抓包/样本只读引用；
 * 没有对 `connectionString` 做解密/逆向算法（只做结构统计与调用链归属）；
 * 没有抓新的 login body（需要用户配合实机，见 §6 P1 / B9）。
+
+---
+
+## 9. B9 回填（2026-11-21 02:09，实机）
+
+B9 已完成，登录体 schema 实测拿到。本文受影响的表述与更正：
+
+| 本文原表述 | 更正后 | 依据 |
+|---|---|---|
+| §0-3 / §3.3「62 次登录全部 437 B（定长 → 票据字段定长）」 | 437 B 只是**同一绑定账号**的定长；未绑定账号是 **346 B**。字段长度：`token` 116、`publicKey` 44、`buildIdentifier` 61、`instanceId` 6，两账号完全相同 | B9 §2 |
+| §3.3「若 body = 模板 + 单个票据串，则票据串 = 437-35 = 402 字符」 | **作废**：body 是 6/9 字段 JSON，`token` 恒 116 字符 | B9 §3 |
+| §3.4「按尺寸反推更像会话票据」中的**尺寸论证** | 作废；票据类型结论本身未被推翻（`token` 116 字符 ascii，既非 hex 也非纯 base64） | B9 §3 |
+| §6 P1「是否含 accountId/token 字段」（未知） | **含**：`token`（票据）+ 绑定账号额外的 `betaToolkitAccountId`（19 位数字） | B9 §2 |
+| 「中：决定是否需要伪装字段」 | **不需要**：mock 不校验 body，两种 body 都 200，两账号均进主界面 | B9 §4.3 |
+
+**新增的未证项**（原 B9 未覆盖）：三个可选字段（`isSuspended`/`isBanned`/`betaToolkitAccountId`）的最终来源
+（PSN 绑定态 vs 历史真服务器下发的账号态缓存）仍是 `⚠ 未证`，判别实验见 `B9-LOGIN-BODY-SCHEMA-2026-11-21.md` §4.2。
+

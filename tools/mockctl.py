@@ -121,6 +121,14 @@ def _build_handler(data_dir: Path, policy: dict, mission_end_dir: Path | None) -
 
 def cmd_serve(args) -> int:
     profile = _load_profile(Path(args.profile) if args.profile else DEFAULT_PROFILE)
+    if args.capture_bodies:
+        cfg = dict(profile.get("body_shapes") or {})
+        cfg.setdefault("paths", ["/api/Account/Login"])
+        cfg.setdefault("dir", "state/evidence/b9")
+        cfg["enabled"] = True
+        profile["body_shapes"] = cfg
+    elif (profile.get("body_shapes") or {}).get("enabled"):
+        print("[serve] body_shapes 已由 profile 启用：只记 schema，不落原值")
     data_dir = Path(args.data) if args.data else _resolve(profile, "data_dir", "samples/store-season")
     cert_dir = Path(args.cert_dir) if args.cert_dir else _resolve(
         profile, "cert_dir", "state/certs")
@@ -268,6 +276,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=None)
     p.add_argument("--mission-end", default=None)
     p.add_argument("--log-headers", action="store_true")
+    p.add_argument("--capture-bodies", action="store_true",
+                   help="B9：只记登录体 schema（字段名/长度/字符类/hash），不落原值")
     p.add_argument("--no-crl", action="store_true")
     p.add_argument("--dry-run", action="store_true", help="绑 127.0.0.1:18443，不抢 443")
     p.add_argument("--insecure-ok", action="store_true", help="跳过未装信任的告警")

@@ -58,9 +58,9 @@ tools/      抓包分析 / 样本构建 / 回放验证 / 控制台
   sample_build.py     抓包 → 脱敏样本（含「原值残留」硬门禁）
   replay_client.py    离线验证：handler / scenario / server 三种模式
   mockctl.py          唯一入口：ports / cert-* / serve / health / selftest
-tests/      pytest 56 项（含真实抓包矩阵、TLS 端到端、脱敏门禁）
+tests/      pytest 75 项（含真实抓包矩阵、TLS 端到端、脱敏门禁、B9 schema 采集/对照）
 profiles/   offline-mock.json（与产品 profile 无关的独立配置）
-docs/       结项档 + A2 主机依赖侦察 + B2/B3 大厅/登录侦察 + T4 运行时出网清单 + T4b 无 PSN 对照
+docs/       结项档 + A2 主机依赖侦察 + B2/B3 大厅/登录侦察 + T4 运行时出网清单 + T4b 无 PSN 对照 + B9 登录体 schema
 ```
 
 ## 5 分钟跑起来（不需要游戏、不需要管理员）
@@ -113,4 +113,5 @@ python tools\replay_client.py --src samples\store-season --mode server `
 | 除 API 主机外的主机依赖（A2） | **✓✓ 运行时抓包完成**：无第二条游戏自有主机；旁路=PlayFab/EOS+EAC/Steam/Sony PC（见 [T4 文档](docs/T4-RUNTIME-EGRESS-2026-11-21.md)） |
 | 出网审计的盲区 | T4 已补：DNS/SNI/UDP 五元组（UDP 3075=PlayFab QoS、3478/3479=Steam SDR、高端口=EOS） |
 | PSN 是否必需 | **非必需**：未绑定 PSN 的 Steam 号可跳过绑定页进船，官方 API 仍是纯本地接管；Sony 侧域名两账号都出现（见 [T4b](docs/T4b-NOPSN-CONTROL-2026-11-21.md)） |
+| 登录体 schema（B9）：437 B（绑定，9 字段）vs 346 B（未绑，6 字段），91 B = 3 个可选字段（票据长度恒定 116） | **✓✓ 实机**（见 [B9](docs/B9-LOGIN-BODY-SCHEMA-2026-11-21.md)）；字段最初来源 ⚠ 未证 |
 | 尚未在 mock 里还原的端点 | `Progression/inventory/consume`、`Progression/Achievements`（T3 新发现，已登记 200 `{}`；数值还原需补抓） |

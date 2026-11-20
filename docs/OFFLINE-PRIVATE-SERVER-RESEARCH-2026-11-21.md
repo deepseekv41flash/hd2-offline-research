@@ -33,14 +33,14 @@
 
 ## 2. 本轮交付与门禁证据（本机可复跑）
 
-研究仓内容：`mock/`（回放+状态机+TLS）、`tools/`（分析/脱敏/回放/控制台）、`tests/`（pytest **63** 项）、
+研究仓内容：`mock/`（回放+状态机+TLS）、`tools/`（分析/脱敏/回放/控制台）、`tests/`（pytest **75** 项）、
 `profiles/`、`docs/`。**没有改动产品仓库任何文件。**
 
 ### 2.1 四道门禁（全部 PASS）
 
 | 门禁 | 命令 | 结果 |
 |---|---|---|
-| 单测 | `python -m pytest tests -q` | **63 passed**（阶段一为 56；T3 准备新增证书信任命令 6 项 + 空大厅/结算中性化 2 项） |
+| 单测 | `python -m pytest tests -q` | **75 passed**（B9 新增：`test_bodycapture.py` 6 项 + `test_compare_shapes.py` 4 项 + TLS 端到端 schema 采集 1 项） |
 | 离线门禁（证书→CRL→TLS→两种回放） | `python tools\mockctl.py selftest` | **SELFTEST PASS** |
 | 真实抓包 handler 回放 | `python tools\replay_client.py --src samples\store-season --mode handler` | **11/11 PASS**（73/73 命中、fallback=0、未识别时间字段=0） |
 | 脚本化启动链+任务链+大厅链 | 同上 `--mode scenario` | **46/46 PASS** |
@@ -109,7 +109,7 @@ mock 绑 `100.67.169.17:443` + CRL `127.0.0.1:18081`。
 | 观测 | 值 |
 |---|---|
 | 游戏进程 | `helldivers2`（多轮 PID：16920 / 36844 / 10048），`Responding=True`，窗口 `HELLDIVERS™ 2` |
-| 登录 | **`POST /api/Account/Login 437B -> 200 52B`** —— 437 B 与 B3 侦察的「定长 437 B」完全吻合；客户端接受 mock 的 `sessionId` |
+| 登录 | **`POST /api/Account/Login 437B -> 200 52B`** —— 437 B 与 B3 侦察的「62 次登录全部 437 B」吻合；客户端接受 mock 的 `sessionId`。**B9 补正**：437 B 是「绑定账号」的定长形态（9 字段），未绑定账号是 346 B（6 字段），见 §2.4.6 |
 | 启动请求 | 34–37 个端点、40+ 条请求全部 200；`4xx/5xx=0`、`fallback=0` |
 | 主界面 | 截图确认飞船内可交互（订单/装备/社交/战备面板）；好友/Episode/Stats 周期轮询正常 |
 | 旧大厅噪声 | 首轮出现 `POST /api/lobby/<录制旧id>/member`（mock 回 `{}`，游戏容忍）→ **T3 前已改成空大厅列表** |
@@ -148,7 +148,8 @@ mock 绑 `100.67.169.17:443` + CRL `127.0.0.1:18081`。
 > 见 [T4b-NOPSN-CONTROL-2026-11-21.md](T4b-NOPSN-CONTROL-2026-11-21.md)。关键答案：
 > **PSN 不是离线单机的必需项**（游戏 UI 明确可跳过绑定直接进船 `SHIP`）；**Sony 侧域名在未绑定账号下照样出现**
 > ⇒ 它们不能作为「必须 PSN」的证据，是 Sony PC SDK 的通用遥测/配置/崩溃通道；官方 API 仍是纯本地接管。
-> 唯一数字差异：登录体 **346 B（未绑定）vs 437 B（已绑定，4 次稳定）**，原因待 B9 schema 取证。
+> 唯一数字差异：登录体 **346 B（未绑定）vs 437 B（已绑定，4 次稳定）** —— **B9 已实测解释**（见 §2.4.6）：
+> 差异是绑定账号多带 3 个可选账号态字段，票据 `token` 两账号都是 116 字符，**与票据长度无关**。
 
 #### 2.4.4 T3 准备（已完成）
 
@@ -190,6 +191,32 @@ mock 绑 `100.67.169.17:443` + CRL `127.0.0.1:18081`。
 
 > 这两条是「真正跑一局」才会出现的端点 —— 也正是登记 fallback 清单的价值：下次抓包/回放范围要补它们。
 > 因为客户端接受空体，暂不需要录制真实响应；若要还原成就数值，得补抓。
+
+#### 2.4.6 B9：登录体真实 schema 对照（✓✓，2026-11-21 02:03–02:09）
+
+交接档 B9 悬项（437 B vs 346 B 的 91 B 差）已闭环。做法：新增 `mock/bodycapture.py`（**只记字段名/长度/字符类/sha8，
+绝不落原值**）+ `mockctl serve --capture-bodies`，先用手工探针证明开关生效（27 B 记录里查不到原值），再抓真实登录：
+
+| 账号 | 体长 | 字段数 | 独有字段 |
+|---|---:|---:|---|
+| A（已绑 PSN） | **437 B** | 9 | `isSuspended=false`、`isBanned=false`、`betaToolkitAccountId`（19 位数字） |
+| B（未绑定 PSN） | **346 B**（2 次独立样本，字段长度全同） | 6 | —— |
+
+共同 6 字段的长度**完全一致**：`token` 116 / `publicKey` 44 / `buildIdentifier` 61 / `instanceId` 6（机器级，
+两账号同值）/ `platform` 3 / `clientVersion` 1007203。
+
+**91 B 精确分解**（`tools/compare_shapes.py`，按 schema 重建 body 长度 → `A=437 B=346 MATCH`）：
+
+```
+新增字段 JSON 本体 = 82 B
+新增字段分隔符风格 = 9 B     ← 客户端用 ", " + " : " + 结尾换行
+合计 = 91 B
+```
+
+⇒ **✗ 否证**「Steam 票据长度随账号变」：票据长度恒定，差异全在 3 个可选字段。
+⇒ **✓✓** mock 不校验登录体，346 B / 437 B 都 200 + `sessionId`，**不需要伪装这三个字段**。
+⇒ `⚠ 未证`：三字段最初来自「PSN 绑定态」还是「历史真服务器下发的账号态缓存」（判别实验未做）。
+详见 [B9-LOGIN-BODY-SCHEMA-2026-11-21.md](B9-LOGIN-BODY-SCHEMA-2026-11-21.md)。
 
 ---
 
@@ -244,7 +271,7 @@ CRL 走 **127.0.0.1:18081**，信任默认装 **`CurrentUser\Root`（非管理�
 
 | # | 未知 | 现状 | 还缺什么 |
 |---|---|---|---|
-| A1 | 客户端是否接受回放登录 | **✓✓ 实机（§2.4.2）**：437 B 登录体 → 200 `sessionId` → 主界面；客户端只认 `sessionId`，不校验其它字段 | —— |
+| A1 | 客户端是否接受回放登录 | **✓✓ 实机（§2.4.2 / §2.4.6）**：437 B 登录体 → 200 `sessionId` → 主界面；客户端只认 `sessionId`，**不校验登录体字段**（346 B 的未绑定账号同样通过） | —— |
 | A2 | 游戏除 API 主机外还连哪些主机 | **✓✓ 运行时抓包完成（T4，§2.4.3 尾注 + [T4 文档](T4-RUNTIME-EGRESS-2026-11-21.md)）**：无第二条游戏自有主机；外连全为 PlayFab / EOS+EAC / Steam / Sony PC 旁路 | E3/E5/E8 的细节（Party 中继动态端点、断网阻塞、PSN 专用性）仍为 ⚠ |
 | A3 | 任务中是否有服务端实时校验 | **✓✓ 实机（§2.4.5）**：整局 4 分钟，进图/局内/撤离/结算/Mission/Session(202)/Abandon 全部被接受，**无阻断性校验**；结算画面正常 | 未覆盖长任务/失败撤离/被踢分支，可再补样本 |
 | A4 | 断网/离线 Steam 票据 | ⚠ 未证；**Steam 在线（非离线模式）即可规避**，用户已把 Steam 排除在接管范围外 | 不需要主动验，避免离线模式 |
@@ -412,7 +439,7 @@ python tools\mockctl.py cert-uninstall          # 撤信任（可逆）
   | `connectionString` **不是** Steam SDR 的 `SteamDatagramHostedAddress`，而是 **PlayFab Multiplayer「Lobby」签发的不可解释连接串**（`PFMultiplayerJoinLobby` / `PFLobbyGetConnectionString` 调用链 + 官方 REST「opaque to everyone except the Lobby service」） | ✓✓ | 交接档 §5.2「原样转发」仍是**必须且正确的最小实现**；但**伪造/自造无效**（串内含 title/大厅/密钥，服务端校验） |
   | 结构恒为 `cv2:<UUIDv4>.r-<8位>\|<6位>\|kv1:<44 字符 base64(32B)>`（107 字符，1397 条样本 / 290 个大厅 / 跨 3 个 build 无例外）；6 位数字最可能是 **PlayFab TitleId 974A9 的十进制**（619689） | ✓ / ✓✓ | 转发层不需要理解语义；工程上只要保证「同串原样回给客户端」 |
   | **入厅由 PlayFab（Azure 云）完成**：`/api/lobby` 只是带外发现通道，客机执行 `PFMultiplayerJoinLobby` 时连的是 PlayFab，不是我们的假后端 | ✓✓ | B 线新增依赖 **B8**：PlayFab 标题 974A9 是否存活/仍接受 Steam 实体登录；另有 **B10**（是否存在运行时关闭 playfab 的开关，纯静态线索） |
-  | 登录 body 本地无落盘样本；62 次登录请求**全部 437 B 定长**；exe 同时有 `GetAuthSessionTicket` 与 `GetAuthTicketForWebApi`，**无** encrypted app ticket 证据 | ✓✓ / ⚠ | B3 建议：**不要解析票据**——按 IP/预配置表把会话映射到自造 `accountId`（与交接档 §5.1 一致）；真验票需要 AppID 553850 的 Steamworks partner key，不可得 |
+  | 登录 body 本地无落盘样本；62 次登录请求**全部 437 B**；exe 同时有 `GetAuthSessionTicket` 与 `GetAuthTicketForWebApi`，**无** encrypted app ticket 证据 | ✓✓ / ⚠→**✓✓（B9）** | B9 已实测 schema：**437 B（绑 PSN，9 字段）/ 346 B（未绑，6 字段）**，`token` 恒 116 字符，差异是 3 个可选账号态字段（§2.4.6）。B3 建议不变：**不要解析票据**——按 IP/预配置表把会话映射到自造 `accountId`（与交接档 §5.1 一致）；真验票需要 AppID 553850 的 Steamworks partner key，不可得 |
 
   ⇒ **线 B 的方案基线要改**：自建后端能接管的是「发现层（登录/大厅列表/任务登记）」，
   **入厅层仍在 PlayFab**（利好：PlayFab 是公网云服务，官方后端全灭时这段可能自动保住；
@@ -430,10 +457,13 @@ python tools\sample_build.py --src D:\mod\tmp\capture-store-season-20261118\raw 
   --dst samples\store-season --mission-end-src D:\mod\out\gwe
 
 # 门禁
-python -m pytest tests -q                                          # 56 passed
+python -m pytest tests -q                                          # 75 passed
 python tools\mockctl.py selftest                                   # SELFTEST PASS
 python tools\replay_client.py --src samples\store-season --mode handler   # 11/11
 python tools\replay_client.py --src samples\store-season --mode scenario  # 46/46
+
+# B9 登录体 schema 对照（需先有 state/evidence/b9/ 的两份采集记录）
+python tools\compare_shapes.py state\evidence\b9\<A>.json state\evidence\b9\<B>.json
 
 # TLS 端到端（本机 dry-run，不抢 443）
 python tools\mockctl.py serve --dry-run --insecure-ok              # 另开窗口

@@ -23,6 +23,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .bodycapture import BodyShapeCapture
 from .handler import MockHandler, Response
 
 MAX_BODY = 8 << 20
@@ -162,6 +163,18 @@ class _ApiHandler(BaseHTTPRequestHandler):
         logger: _Logger = server.logger  # type: ignore[attr-defined]
         body = self._read_body()
         headers = {k.lower(): v for k, v in self.headers.items()}
+        # B9：只记登录体 schema（字段名/长度/字符类/hash），绝不落原值
+        cap = getattr(server, "body_capture", None)
+        if cap is not None and body:
+            try:
+                rec = cap.capture(self.command, self.path, body)
+                if rec:
+                    logger.log(
+                        f"{_now_stamp()}   SHAPE {self.command:6s} {self.path} "
+                        f"{rec['shape']['bytes']}B sha={rec['shape']['sha256'][:8]} "
+                        f"format={rec['shape'].get('format')}")
+            except Exception as exc:  # noqa: BLE001
+                logger.log(f"{_now_stamp()} !! body-shape 采集失败: {exc!r}")
         try:
             resp = mock.handle(self.command, self.path, body, headers)
         except Exception as exc:  # noqa: BLE001
@@ -243,6 +256,7 @@ class MockServer:
         self.httpd: ThreadingHTTPServer | None = None
         self.crl_srv: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self.body_capture = BodyShapeCapture.from_profile(self.handler.profile)
 
     # ---- 生命周期 ---------------------------------------------------------
     def start(self) -> "MockServer":
@@ -260,6 +274,7 @@ class MockServer:
         httpd.mock = self.handler          # type: ignore[attr-defined]
         httpd.logger = self.logger          # type: ignore[attr-defined]
         httpd.log_headers = self.log_headers  # type: ignore[attr-defined]
+        httpd.body_capture = self.body_capture  # type: ignore[attr-defined]
         self.httpd = httpd
         try:
             self.port = int(httpd.server_address[1])  # port=0 时取实际端口

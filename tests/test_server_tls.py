@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import urllib.request
 from pathlib import Path
 
@@ -108,6 +109,33 @@ def test_server_reports_bind_conflict(cert_dir: Path, synthetic_capture: Path):
         assert "443 只能有一个主人" in str(excinfo.value)
     finally:
         first.stop()
+
+
+def test_body_shape_capture_through_tls(cert_dir: Path, synthetic_capture: Path, tmp_path: Path):
+    """B9 端到端：登录体经过 TLS 后按 profile 配置落 schema，且不含原值。"""
+    store = CaptureStore.load(synthetic_capture)
+    b9dir = tmp_path / "b9"
+    handler = MockHandler(store, profile={"body_shapes": {"enabled": True, "dir": str(b9dir)}})
+    srv = MockServer(handler, host="127.0.0.1", port=0, cert_dir=cert_dir,
+                     serve_crl=False)
+    srv.start()
+    try:
+        client = HttpsClient("127.0.0.1", srv.port, sni_host=certs.DEFAULT_HOST,
+                             ca_file=str(cert_dir / "ca.pem"))
+        secret = "TICKET_ABCDEF0123456789SECRET"
+        body = json.dumps({"platform": "STEAM", "code": secret}).encode()
+        r = client.request("POST", "/api/Account/Login", body)
+        assert r.status == 200
+        files = list(b9dir.glob("*.json"))
+        assert len(files) == 1
+        text = files[0].read_text(encoding="utf-8")
+        assert secret not in text
+        rec = json.loads(text)
+        assert rec["shape"]["bytes"] == len(body)
+        assert rec["shape"]["json"]["keys"] == ["platform", "code"]
+        assert rec["shape"]["json"]["children"]["code"]["len"] == len(secret)
+    finally:
+        srv.stop()
 
 
 def test_preflight_rejects_tampered_dir(cert_dir: Path, tmp_path: Path):
