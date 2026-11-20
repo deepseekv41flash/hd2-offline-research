@@ -55,6 +55,11 @@
 | `clientconfig.api.wwsga.me` / `crs.api.wwsga.me` | 经本机代理 | 同上；`crs` = 崩溃上报通道（与 `crs-handler.exe` 对应） | **Sony PC 配置/崩溃上报** |
 | `pss-cloud.net` | `54.244.195.76`（AWS us-west-2） | 证书 SAN=`*.pss-cloud.net`（Amazon RSA） | **Sony PC 服务（⚠ 精确用途未证）** |
 
+> **对照实验（T4b）**：换成**未绑定 PSN** 的 Steam 号再抓 180 s，上述 Sony 侧域名
+> （`testament/clientconfig/crs.api.wwsga.me`、`pss-cloud.net`）**一个不少地照样出现**
+> ⇒ 它们与 PSN 绑定状态无关，是 Sony PC SDK 的通用遥测/配置/崩溃通道。
+> 详见 [T4b-NOPSN-CONTROL-2026-11-21.md](T4b-NOPSN-CONTROL-2026-11-21.md)。
+
 > 这些**都不是官方游戏后端**；离线单机不依赖它们（T3 已证整局任务只连 mock）。
 
 ## 3. UDP 目的地址（netstat 看不到的部分）

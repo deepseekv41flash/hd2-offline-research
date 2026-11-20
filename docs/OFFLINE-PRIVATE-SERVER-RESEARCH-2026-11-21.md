@@ -143,6 +143,12 @@ mock 绑 `100.67.169.17:443` + CRL `127.0.0.1:18081`。
 > **没有第二条 `*.thehelldiversgame.com`（✗ 否证存在）**；API 域名只出现在指向本机 `100.67.169.17` 的 SNI 里；
 > UDP 侧确认 PlayFab QoS（3075/Azure）、Steam SDR STUN（3478/3479）、EOS 中继（高端口）；
 > 另定位到 Sony PC 侧 `wwsga.me` / `pss-cloud.net`。
+>
+> **T4b 对照抓包（2026-11-21 01:51–01:54，换成未绑定 PSN 的 Steam 号）**：
+> 见 [T4b-NOPSN-CONTROL-2026-11-21.md](T4b-NOPSN-CONTROL-2026-11-21.md)。关键答案：
+> **PSN 不是离线单机的必需项**（游戏 UI 明确可跳过绑定直接进船 `SHIP`）；**Sony 侧域名在未绑定账号下照样出现**
+> ⇒ 它们不能作为「必须 PSN」的证据，是 Sony PC SDK 的通用遥测/配置/崩溃通道；官方 API 仍是纯本地接管。
+> 唯一数字差异：登录体 **346 B（未绑定）vs 437 B（已绑定，4 次稳定）**，原因待 B9 schema 取证。
 
 #### 2.4.4 T3 准备（已完成）
 
