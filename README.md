@@ -109,6 +109,7 @@ python tools\replay_client.py --src samples\store-season --mode server `
 | **游戏客户端接受这套 mock（A1）**：`POST /api/Account/Login 437B -> 200 sessionId` → 主界面 | **✓✓ 实机（EAC-on 也通过）** |
 | 官方 API 零外连（180s 全程序连接采样：真实 API IP 0 命中，只有本机 mock） | ✓✓ 实机（详见结项档 §2.4.3） |
 | 任务链 / 大厅链状态机（含 Create 回显、connectionString 原样转发） | ✓ 离线（scenario 46 项断言） |
-| 单人任务链端到端（A3：能否进图/结算） | **⚠ 未证 —— T3 待做** |
-| 除 API 主机外的主机依赖（A2） | 静态侦察 + 首份运行时清单已出；域名级（SNI/UDP）仍需正式抓包 |
+| **单人任务链（A3）**：`Operation/Create → Mission/Start → Mission/end → Mission/Session(202) → Abandon` | **✓✓ 实机（4 分钟任务正常撤离结算）** |
+| 除 API 主机外的主机依赖（A2） | 静态侦察 + 运行时清单已出；域名级（SNI/UDP）仍需正式抓包 |
 | 出网审计的盲区 | UDP 目的地址、本机代理隧道去向（见结项档 §2.4.3） |
+| 尚未在 mock 里还原的端点 | `Progression/inventory/consume`、`Progression/Achievements`（T3 新发现，已登记 200 `{}`；数值还原需补抓） |

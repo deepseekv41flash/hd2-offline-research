@@ -160,6 +160,21 @@ def test_operation_and_mission_chain_via_handler(synthetic_capture: Path):
     assert h.handle("POST", "/api/Account/ReportPosition", b"{}").status == 200
 
 
+def test_mission_chain_endpoint_gaps_from_t3_are_now_known(synthetic_capture: Path):
+    """T3 实机在结算前后发现两个启动抓包没有的端点：现在应登记为已知空响应 200。"""
+    h = build(synthetic_capture)
+    consume = h.handle("POST", "/api/Progression/inventory/consume",
+                       json.dumps({"items": [{"mixId": 1, "amount": -1}]}).encode())
+    assert consume.status == 200 and consume.source == "state:progression_consume"
+    assert consume.json() == {}
+    ach = h.handle("PUT", "/api/Progression/Achievements",
+                   json.dumps({"achievements": [{"id": 1, "value": 1}]}).encode())
+    assert ach.status == 200 and ach.source == "state:progression_achievements"
+    assert ach.json() == {}
+    # 不应再计入「未命中」清单
+    assert h.unmatched == {}
+
+
 def test_real_capture_every_endpoint_matched(real_capture: Path):
     store = CaptureStore.load(real_capture)
     h = build(real_capture, now=None)

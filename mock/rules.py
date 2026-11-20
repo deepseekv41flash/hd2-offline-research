@@ -117,6 +117,10 @@ STATE_ROUTES: list[tuple[str, re.Pattern, str]] = [
     ("GET", re.compile(r"^/api/lobby/(?P<lobby_id>[^/]+)$"), "lobby_get"),
     ("POST", re.compile(r"^/api/lobby/(?P<lobby_id>[^/]+)/member$"), "lobby_member"),
     ("PUT", re.compile(r"^/api/Progression/Items/Customize/v2$"), "progression_customize"),
+    # T3 实机新发现（2026-11-21 任务结算前后出现，启动抓包里没有录制）：
+    # 两者客户端都接受 200 {}，登记为「已知空响应」而不是笼统 fallback。
+    ("POST", re.compile(r"^/api/Progression/inventory/consume$"), "progression_consume"),
+    ("PUT", re.compile(r"^/api/Progression/Achievements$"), "progression_achievements"),
     ("POST", re.compile(r"^/api/Pes/(?P<pes>[A-Za-z0-9]+)$"), "pes_post"),
 ]
 

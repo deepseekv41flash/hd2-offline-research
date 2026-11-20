@@ -234,6 +234,12 @@ class MockHandler:
             if name == "progression_customize":
                 return self._json(st.set_customization(payload, self.customize_template),
                                   source=src)
+            if name == "progression_consume":
+                # 任务结算前后的消耗（弹药/战备补充等）；客户端只关心 200
+                return self._json({}, source=src)
+            if name == "progression_achievements":
+                # 结算后上报成就进度；离线不落账，回 200 空体（T3 实机验证客户端接受）
+                return self._json({}, source=src)
             if name == "pes_post":
                 match = self.index.lookup(method, raw_path)
                 if match is not None:

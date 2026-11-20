@@ -9,11 +9,12 @@
 
 ## 0. 一句话结论
 
-**线 A 已实机跑通「登录 → 主界面 → 稳态轮询」：官方 API 零外连，全部由本地 mock 应答（2026-11-21 01:14 首验，
-01:31 用空大厅 profile 复验）。** 工程侧 73 条真实抓包响应 100% 命中、时间字段按规则平移、TLS（自签 CA +
-CDP/CRL + AKI）在 **Windows Schannel** 与 **.NET SslStream** 两条原生链路上均握手成功；
-EAC-on 启动也照常工作。**下一步只剩 T3：单人任务链（`Operation/Create → Mission/Start → ReportPosition → Mission/end`）。**
-（A1 已 ✓✓；A3 待 T3；A2 静态侦察完成、运行时主机清单已顺手抓到一份，见 §2.4.3。）
+**线 A 的单机闭环已实机跑通：登录 → 主界面 → 单人任务（进图/局内/撤离结算）→ 回主界面，官方 API 零外连，
+全部由本地 mock 应答。** 三段实机（2026-11-21 01:14 首验、01:31 空大厅 profile 复验、01:35–01:39 任务链）
+全部通过：登录 437 B → 200 `sessionId`；任务链 `Operation/Create → Mission/Start → Mission/end → Mission/Session → Abandon`
+逐条 200/202，**客户端正常显示结算画面**（用户确认），EAC-on 启动也照常工作。
+工程侧 73 条抓包响应 100% 命中、时间字段按规则平移、TLS 在 Windows Schannel 与 .NET SslStream 均握手成功。
+**A1 ✓✓ / A3 ✓✓ 关闭**；A2 剩域名级清单（需管理员抓包）、A4 按边界不验。
 
 ---
 
@@ -145,6 +146,39 @@ mock 绑 `100.67.169.17:443` + CRL `127.0.0.1:18081`。
 | `Mission/end` 结算中性化（`campaignWon/impact/othersImpact*` → 0/False） | 离线不能假装「星球已解放」 | 单测 + scenario 断言 |
 | mock 重启 + 游戏重启复验 | 保证 T3 从干净会话开始 | 01:31 复验：28 条请求、0 错误、登录 437 B |
 
+#### 2.4.5 T3：单人任务链（✓✓ 实机通过，2026-11-21 01:33–01:40）
+
+用户正常操作：星图选任务 → 开局 → **约 4 分钟任务 → 正常撤离结算**（用户确认结算画面正常）。
+
+| 时刻 | 端点 | 请求 | 响应 | 命中 |
+|---|---|---|---|---|
+| 01:33:56 | `POST /api/Operation/Create` | 298 B | 200 / 60 B | `state:operation_create`（回显客户端 id） |
+| 01:35:08 | `POST /api/Operation/Mission/Start` | 166 B | 200 / 52 B | `state:mission_start`（分配 missionId）**← 进图** |
+| 01:35:39 | `POST /api/Operation/Mission/SetMaxRewards` | 73 B | 200 / 2 B | `state:mission_max_rewards` |
+| 01:39:21 | `POST /api/Progression/inventory/consume` | 272 B | 200 / 2 B | 新端点（见下） |
+| 01:39:21 | `POST /api/Operation/Mission/end` | 863 B | **200 / 1,617 B** | `state:mission_end`（模板回填，**结算画面正常**） |
+| 01:39:28 | `PUT /api/Progression/Achievements` | 141 B | 200 / 2 B | 新端点（见下） |
+| 01:39:28 | `POST /api/Mission/Session` | 1,249 B | **202 / 0 B** | `state:mission_session`（客户端接受 202） |
+| 01:39:39 | `POST /api/Pes/GetIngameSurvey` | 961 B | 200 / 2 B | `state:pes_post` |
+| 01:40:10 | `POST /api/Operation/Abandon` | 27 B | 200 / 2 B | `state:operation_abandon`（结算后自动清作战） |
+| 01:40:15+ | 主界面轮询恢复 | — | 200 | 回船后一切正常 |
+
+任务窗口 45 条请求、0 个 4xx/5xx、0 个 error，仅 2 条 fallback（见下的新端点）。
+
+**A3 结论（✓✓）**：单人离线任务中**没有出现任何阻断性服务端校验** —— 进图、局内、撤离、结算、
+`Mission/Session`(202)、`Abandon` 都被客户端正常接受，全程只有 mock 在应答。
+限制：本次是约 4 分钟的正常撤离局（未覆盖长任务/失败撤离/被杀等分支）。
+
+**T3 暴露的两个新端点（启动抓包里没有录制）**：
+
+| 端点 | 说明 | 处置 |
+|---|---|---|
+| `POST /api/Progression/inventory/consume` | 结算前后消耗（补充类） | 已登记为 `state:progression_consume` → 200 `{}`（客户端接受） |
+| `PUT /api/Progression/Achievements` | 结算后成就进度上报 | 已登记为 `state:progression_achievements` → 200 `{}`（客户端接受） |
+
+> 这两条是「真正跑一局」才会出现的端点 —— 也正是登记 fallback 清单的价值：下次抓包/回放范围要补它们。
+> 因为客户端接受空体，暂不需要录制真实响应；若要还原成就数值，得补抓。
+
 ---
 
 ## 3. 关键设计（capture → replay 的本地云端）
@@ -181,6 +215,8 @@ fallback 一律 **200**（不是 404）：客户端有轮询循环，4xx 会打�
 | `POST /api/Operation/Mission/end` | 用抓包模板回填 `operationId/missionIndex/missionId`，并把模板里的 `platformAccountId` 换成 mock 账号；离线默认把 `othersImpact*` 归零（不假装社区战果） | gwe 里 12 份唯一响应；样本取前 5 份作模板（`d0bdbe5b|12b9a872|dd2350f7` 等） |
 | `POST /api/Mission/Session` | 202 空响应 | 已知它有服务端校验（errorCode 8012016），**别承诺"重连可用"** |
 | `POST /api/Account/ReportPosition` | 200 `{}` | 反作弊位置上报，28 次/会话量级 |
+| `POST /api/Progression/inventory/consume` | 200 `{}`（T3 实测客户端接受） | T3 结算前出现（272 B 请求）；启动抓包未录制，登记为已知空响应 |
+| `PUT /api/Progression/Achievements` | 200 `{}`（T3 实测客户端接受） | T3 结算后出现（141 B 请求）；同上 |
 
 ### 3.4 TLS 配方（为什么必须这么做）
 
@@ -198,7 +234,7 @@ CRL 走 **127.0.0.1:18081**，信任默认装 **`CurrentUser\Root`（非管理�
 |---|---|---|---|
 | A1 | 客户端是否接受回放登录 | **✓✓ 实机（§2.4.2）**：437 B 登录体 → 200 `sessionId` → 主界面；客户端只认 `sessionId`，不校验其它字段 | —— |
 | A2 | 游戏除 API 主机外还连哪些主机 | ✓ 静态侦察完成（见 [A2-HOST-DEPENDENCIES-2026-11-21.md](A2-HOST-DEPENDENCIES-2026-11-21.md)）；**运行时首份清单已抓到**（§2.4.3：Azure/AWS/CloudFront/Cloudflare + 本机代理隧道；真实 API IP 0 命中） | 若要域名级清单（SNI/UDP）仍需 T4 正式抓包（需管理员） |
-| A3 | 任务中是否有服务端实时校验 | ⚠ 未证（mock 侧 `Mission/Session`→202、`ReportPosition`→200、`Mission/end`→模板结算均已备） | **T3（下一步）** |
+| A3 | 任务中是否有服务端实时校验 | **✓✓ 实机（§2.4.5）**：整局 4 分钟，进图/局内/撤离/结算/Mission/Session(202)/Abandon 全部被接受，**无阻断性校验**；结算画面正常 | 未覆盖长任务/失败撤离/被踢分支，可再补样本 |
 | A4 | 断网/离线 Steam 票据 | ⚠ 未证；**Steam 在线（非离线模式）即可规避**，用户已把 Steam 排除在接管范围外 | 不需要主动验，避免离线模式 |
 | A5 | 时间字段平移策略 | ✓ 工程实现 + 门禁；**✓✓ 客户端接受平移值**（主界面连续轮询 8 分钟无过期/错误） | 极端场景（跨天/事件结束）仍可再验 |
 
@@ -310,7 +346,7 @@ curl.exe -v --resolve api.live.prod.thehelldiversgame.com:443:100.67.169.17 `
 * 报「数据过期/无法连接任务」⇒ 看 `health.unknown_time_fields`（应空）与 `last_shift`；
 * 记录现场：`state\logs\mock.log` 片段 + `health` JSON。
 
-### T3 单人任务链（A3，**下一项**）
+### T3 单人任务链（A3，✅ 已完成 2026-11-21 01:35–01:39，见 §2.4.5）
 
 前置：T2 已进主界面。动作：星图选星球 → 开始任务 → 打完/撤离。
 判据：mock 日志依次出现 `Operation/Create → Mission/Start →（局内 ReportPosition 周期调用）→
