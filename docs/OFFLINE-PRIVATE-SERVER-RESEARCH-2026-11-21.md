@@ -500,3 +500,23 @@ python tools\replay_client.py --src samples\store-season --mode server `
 ```
 
 > 注：`samples/` 可随时删掉重建；`state/`（证书/日志/证据）同样可重建。
+
+---
+
+## 10. 收尾（T5，2026-11-21 02:35）
+
+线 A 的实机取证结束后已按纪律复原现场，**没有留下任何系统级残留**：
+
+| 项 | 动作 | 验证 |
+|---|---|---|
+| 游戏进程 | 优雅关闭（WM_CLOSE，4 s 退出） | `helldivers2` 进程 0 个 |
+| mock | 停进程 | 443 / 18081 监听 0 个 |
+| 研究 CA 信任 | `mockctl cert-uninstall --scope CurrentUser` | 返回 `{"action":"removed","trusted_after":false}`；`certutil -user -store Root` 已查不到指纹 `F8388638…7C463` |
+| hosts 行 | **保留不动** | 第 16 行 `100.67.169.17 api.live.prod.thehelldiversgame.com # hd2proxy`（产品线依赖，不属于研究线收尾范围） |
+| Steam 账号 | 保持账号 B（用户原始 AutoLogin=1 的那个账号，名称按脱敏纪律不写） | `AutoLoginUser` = 账号 B |
+| 转发器 | 判别实验后即停 | 无残留进程 |
+
+**留给后续（不影响本档结论）**：
+* 证书有效期 46 h、过期后 mock 需 `cert-gen` + `cert-install` 重装才可再用（研究线不常驻）；
+* 线 B（B1/B8）需要第二台机器与 PlayFab 标题存活性验证，按用户排序暂缓；
+* B9 的唯一残留缺口：未做"给账号 B 绑定 PSN"的正向对照（要动用户的 PSN 账号），故 H1 记 ✓ 而非 ✓✓。
