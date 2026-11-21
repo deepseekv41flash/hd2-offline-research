@@ -120,6 +120,6 @@ python tools\replay_client.py --src samples\store-season --mode server `
 | 除 API 主机外的主机依赖（A2） | **✓✓ 运行时抓包完成**：无第二条游戏自有主机；旁路=PlayFab/EOS+EAC/Steam/Sony PC（见 [T4 文档](docs/T4-RUNTIME-EGRESS-2026-11-21.md)） |
 | 出网审计的盲区 | T4 已补：DNS/SNI/UDP 五元组（UDP 3075=PlayFab QoS、3478/3479=Steam SDR、高端口=EOS） |
 | PSN 是否必需 | **非必需**：未绑定 PSN 的 Steam 号可跳过绑定页进船，官方 API 仍是纯本地接管；Sony 侧域名两账号都出现（见 [T4b](docs/T4b-NOPSN-CONTROL-2026-11-21.md)） |
-| **阶段1 必要性（T7）**：PlayFab/Sony 断开不阻断；**EOS/EAC 必须可达**（断开则 EAC 报错退出）；PlayFab 空应答会让 Party 链放弃 ⇒ 阶段2 必须保留 PlayFab | **✓✓ 实机**（4 轮差分 + 用户目视确认，见 [T7](docs/T7-STAGE1-NECESSITY-2026-11-21.md)） |
+| **阶段1 必要性（T7，3 组×2 种处置）**：PlayFab/Sony 断开或伪 `200 {}` 都不阻断；**EOS/EAC 两种处置都被拦**（EAC 需真实协议交互，假服务骗不过）⇒ 阶段1 只需接管官方 API + 保 EAC 网络；阶段2 必须保留 PlayFab | **✓✓ 实机**（6 轮差分 + 用户目视确认，见 [T7](docs/T7-STAGE1-NECESSITY-2026-11-21.md)） |
 | 登录体 schema（B9）：437 B（绑定，9 字段）vs 346 B（未绑，6 字段），91 B = 3 个可选字段（票据长度恒定 116） | **✓✓ 实机**（见 [B9](docs/B9-LOGIN-BODY-SCHEMA-2026-11-21.md)）；"真登录过就会带"的缓存假设 **✗ 否证**，PSN 绑定关系 **✓ 支持** |
 | 尚未在 mock 里还原的端点 | `Progression/inventory/consume`、`Progression/Achievements`（T3 新发现，已登记 200 `{}`；数值还原需补抓） |

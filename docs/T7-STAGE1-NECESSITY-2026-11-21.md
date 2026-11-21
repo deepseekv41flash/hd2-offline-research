@@ -7,8 +7,9 @@
 
 ## 0. 一句话结论
 
-**PlayFab 与 Sony 侧在阶段1 可以不管（断掉/伪接管都能正常进主界面）；EOS/EAC 是硬依赖——
-断开后 EAC 弹「无法连接反作弊网络，游戏将退出」，游戏直接退出。**
+**PlayFab 与 Sony 侧在阶段1 可以不管（断掉、伪接管都能正常进主界面）；EOS/EAC 是硬依赖，
+而且**两种处置都被拦**：断开 → EAC 弹「无法连接反作弊网络，游戏将退出」；伪 `200 {}` → 同样被拒。
+⇒ EAC 需要与真实服务完成协议交互，"本地假服务"骗不过去。**
 而 PlayFab 虽然阶段1 非必需，但它**不能被"空应答"糊弄**：Party/Lobby 链在第一步 `ListPartyQosServers`
 就放弃 ⇒ 阶段2 要自建联机，**必须保留 PlayFab 云**（或完整实现其协议），"完全自建联机"不可行。
 
@@ -22,14 +23,20 @@
 | 判据 | `stable` = 到主界面后 25 s 内游戏未退出；`steady_polling` = 该窗口 mock 请求 ≥ 15 行（主界面稳态轮询）；两者都满足才记 `stable`。**注意**：EAC 弹框时 `helldivers2` 进程仍存活，所以单看进程会误判——R2 的 `stable=True` 就是这种假象，用轮询行数（7 行）纠正 |
 | 证据 | `state/evidence/t7/*.json`（每轮结论）、`mitm-*.jsonl`（该轮旁路日志）、`eac-error-r2-*.png`（EAC 弹框截图，用户提供） |
 
-## 2. 结果（4 轮，均为实机）
+## 2. 结果（6 轮 = 3 组 × 两种断开方式，均为实机）
 
-| 轮次 | 改动 | 到主界面 | 稳态轮询 | 判定 | 人眼确认 |
-|---|---|---:|---:|---|---|
-| R1 | `974a9.playfabapi.com` **全断**（26 次 CONNECT 被黑洞） | 24 s | 35 行 | **✓ 不阻断** | 用户：「正常进」 |
-| R2 | `api.epicgames.dev` **全断**（EOS+EAC，6 次黑洞） | 32 s（假象） | **7 行** | **✗ 阻断** | 用户：EAC 弹框「Could not connect to Easy Anti Cheat network… Helldivers 2 will now exit.」**两次复现** |
-| R3 | Sony 四条域 **全断** | 28 s | 41 行 | **✓ 不阻断** | 用户：「正常进」 |
-| R4 | `974a9.playfabapi.com` **伪接管**（一律回 `200 {}`） | 24 s | 39 行 | **✓ 不阻断** | 用户：「正常进」 |
+| 组 | 断开方式 = **不可达**（blackhole） | 断开方式 = **伪接管**（一律 `200 {}`） |
+|---|---|---|
+| **PlayFab** | R1：24 s 到主界面 / 35 行稳态 → **不阻断**（用户「正常进」） | R4：24 s / 39 行 → **不阻断**（用户「正常进」） |
+| **EOS/EAC** | R2：7 行、EAC 弹「无法连接反作弊网络，游戏将退出」→ **✗ 阻断**（2 次复现） | R6：7 行、**同样弹框退出** → **✗ 阻断**（用户截图确认） |
+| **Sony** | R3：28 s / 41 行 → **不阻断**（用户「正常进」） | R5：44.7 s / 42 行 → **不阻断**（用户「正常进」） |
+
+**这张矩阵的含义**：
+
+* PlayFab / Sony 组：两种处置都不阻断 ⇒ 阶段1 **可以完全不接管**，客户端会重试（R1 有 26 次 CONNECT 被拒）但不会卡住；
+* **EOS/EAC 组：两种处置都被拦** ⇒ 它不是"连不上"的问题，而是 **EAC 需要与真实服务完成协议交互**，
+  给个 `200 {}` 假响应对它无效（EAC 会对响应做真实性校验/解析）。
+  ⇒ 阶段1 想绕开 EAC 网络，只能走 **EAC-off 启动**，不能靠"本地假服务"。
 
 ### 2.1 关键细节：PlayFab 断掉后，Party/Lobby 链是「优雅放弃」而不是「卡死」
 
@@ -84,7 +91,8 @@ EAC 启动时要做网络检查；断开后 EAC 直接失败并令游戏退出�
 | EOS/EAC 断开 ⇒ EAC 报错、游戏退出 | **✓✓ 实机**（2 次复现 + 截图） | R2 |
 | 空 `200 {}` 就能顶替 PlayFab 的联机功能 | **✗ 否证** | R4：Party/Lobby 链在第一步放弃 |
 | 阶段1 需要接管 PlayFab | **✗ 否证（不需要）** | R1/R4 |
-| 完全无外网下的 EAC-on 启动 | **⚠ 未证**（本轮只是断开 EAC 网络；EAC-off 直启路径见历史记录，未在本轮复测） | —— |
+| 用「本地假 EAC 服务（200 {}）」可绕过 EAC 网络检查 | **✗ 否证** | R6：伪接管同样被拦、游戏退出 |
+| 完全无外网下的 EAC-on 启动 | **⚠ 未证**（本轮只做"断开/伪接管"；EAC-off 直启路径见历史记录，未在本轮复测） | —— |
 
 ## 6. 复现
 
@@ -95,6 +103,8 @@ python tools\t7_probe.py --name playfab-blackhole --blackhole 974a9.playfabapi.c
 python tools\t7_probe.py --name eos-blackhole      --blackhole api.epicgames.dev
 python tools\t7_probe.py --name sony-blackhole     --blackhole crs.api.wwsga.me,testament.api.wwsga.me,clientconfig.api.wwsga.me,pss-cloud.net
 python tools\t7_probe.py --name playfab-fake200    --fake 974a9.playfabapi.com
+python tools\t7_probe.py --name sony-fake200       --fake crs.api.wwsga.me,testament.api.wwsga.me,clientconfig.api.wwsga.me,pss-cloud.net
+python tools\t7_probe.py --name eos-fake200        --fake api.epicgames.dev
 ```
 
 判据看 `state/evidence/t7/<name>.json` 的 `verdict`：`stable` = 未阻断；`eac_blocked` = 被 EAC 拦下。
