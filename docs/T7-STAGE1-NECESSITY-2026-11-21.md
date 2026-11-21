@@ -52,7 +52,7 @@ R4: ListPartyQosServers → 200 {}（缺 QosServers 字段）
 对比 T6a 正常放行时的顺序：`ListPartyQosServers`(拿到 17 区) → `pubsub/negotiate` → `Party/RequestParty`(分配中继) →
 `Lobby/CreateLobby`(签发 connectionString)。**第一步拿不到有效数据，后面整条链就不走了。**
 
-### 2.2 T7b：PlayFab 不可达下的**完整一局**（✓✓，2026-11-21 12:39–12:45）
+### 2.2 T7b：整局验收（两轮，均 ✓✓：2026-11-21 12:39–12:45 / 12:49–12:55）
 
 主界面不阻断只是第一步；阶段1 真正要证的是"整局也能打"。用 `tools/t7b_probe.py` 把流程包起来
 （起 mock + MITM、PlayFab 黑洞、改 IE 代理、启动、等用户打局、收尾复原）：
@@ -69,6 +69,23 @@ R4: ListPartyQosServers → 200 {}（缺 QosServers 字段）
 * 主界面 **27.1 s**；窗口内 **59 条请求、0 个非 200、0 fallback**；
 * `Abandon` 未在本窗口出现（探针在结算后 20 s 收尾，T3b 里它是结算后约 42 s 才发，属时序问题，不影响结论）；
 * ⇒ **PlayFab 完全不可达时，单人「进图 → 局内 → 撤离结算」全链路正常** ⇒ 阶段1 可以不接管 PlayFab（`✓✓`）。
+
+**第二轮 = 阶段1 的真实部署形态：PlayFab + Sony 四域同时黑洞，EOS/EAC 保持可达**（12:49–12:55）：
+
+| 时刻 | 端点 | 请求 | 响应 |
+|---|---|---|---|
+| 12:49:38 | `POST /api/Operation/Create` | 300 B | 200 / 60 B |
+| 12:50:47 | `POST /api/Operation/Mission/Start` | 167 B | 200 / 52 B **← 进图**（主界面后 104 s） |
+| 12:54:46 | `POST /api/Progression/inventory/consume` | 233 B | 200 / 2 B |
+| 12:54:46 | `POST /api/Operation/Mission/end` | 864 B | **200 / 1,617 B ← 结算** |
+| 12:54:52 | `PUT /api/Progression/Achievements` | 141 B | 200 / 2 B |
+| 12:54:52 | `POST /api/Mission/Session` | 1,577 B | 202 / 0 B |
+
+* 主界面 **24.0 s**；窗口内 **59 条请求、0 个非 200、0 fallback**；
+* MITM 侧统计：`974a9.playfabapi.com` 被黑洞 **55 次**（客户端反复重试），`crs.api.wwsga.me` **仅 1 次**；
+  `testament/clientconfig/pss-cloud` **本局一次都没被调用**（说明单机流程里 Sony 侧实际只有崩溃上报通道偶尔出现）；
+* ⇒ **阶段1 部署形态（官方 API 接管 + PlayFab/Sony 不可用 + EAC 可达）下，完整单局通过** `✓✓`。
+  这是**阶段1 接管面的最终验收**。
 
 ### 2.3 EOS/EAC 为什么是硬依赖
 
@@ -87,6 +104,7 @@ EAC 启动时要做网络检查；断开后 EAC 直接失败并令游戏退出�
 | Sony（`*.wwsga.me` / `pss-cloud.net`） | **可不接管** | R3 |
 
 ⇒ 也就是说：**阶段1 的产品不需要把 PlayFab 纳入接管面**，省掉一大块复杂度；只有 EAC 的网络前置必须满足。
+**该接管面已通过整局验收**（T7b 两轮：仅 PlayFab 黑洞 / PlayFab+Sony 组合黑洞，均 0 错 0 fallback）。
 若目标是「**完全无外网** 也能单机」，则 EAC-on 启动会失败，需要走 **EAC-off 启动**（直接跑
 `bin\helldivers2.exe`，绕开 `start_protected_game.exe`；本机此前已实测该路径可行）——这是一个产品取舍，需用户拍板。
 
@@ -106,7 +124,8 @@ EAC 启动时要做网络检查；断开后 EAC 直接失败并令游戏退出�
 |---|---|---|
 | PlayFab 断开/伪接管不阻断单人启动到主界面 | **✓✓ 实机**（用户目视确认 + 35/39 行稳态轮询） | R1/R4 |
 | Sony 侧断开不阻断 | **✓✓ 实机** | R3 |
-| **PlayFab 不可达时完整单人任务可通过** | **✓✓ 实机** | T7b：27.1 s 主界面 → 120.2 s 进图 → 352.3 s 结算，59 请求 / 0 非 200 / 0 fallback |
+| **PlayFab 不可达时完整单人任务可通过** | **✓✓ 实机** | T7b-1：27.1 s 主界面 → 120.2 s 进图 → 352.3 s 结算，59 请求 / 0 非 200 / 0 fallback |
+| **PlayFab+Sony 同时不可达（阶段1 部署形态）时完整单局可通过** | **✓✓ 实机** | T7b-2：24.0 s 主界面 → 104.2 s 进图 → 340.3 s 结算，59 请求 / 0 非 200 / 0 fallback |
 | EOS/EAC 断开 ⇒ EAC 报错、游戏退出 | **✓✓ 实机**（2 次复现 + 截图） | R2 |
 | 空 `200 {}` 就能顶替 PlayFab 的联机功能 | **✗ 否证** | R4：Party/Lobby 链在第一步放弃 |
 | 阶段1 需要接管 PlayFab | **✗ 否证（不需要）** | R1/R4 |
@@ -139,5 +158,5 @@ python tools\t7b_probe.py --name stage1-combo-mission --blackhole "974a9.playfab
 * EAC 弹框需要人眼确认（本轮已由用户两次截图确认；`helldivers2` 进程在弹框期间仍存活，进程存活不能当判据）；
 * 只覆盖「启动到主界面」；**未**覆盖「进图打一局」在该组断开下是否仍可（阶段1 若采用"不接管 PlayFab"，
   已由 T7b 补上（PlayFab 黑洞整局通过）；
-* **Sony 黑洞的整局**未单独跑（内容层面与游戏逻辑无关），计划用「PlayFab+Sony 组合黑洞」一轮做阶段1 最终验收；
+* **Sony 黑洞的整局**已随 T7b-2 组合黑洞一起覆盖（且本局 Sony 侧只调用了 `crs` 一次，其余三域未出现）；
 * 未测 EAC-off 启动在完全无网络环境的表现（历史记录显示直启可行，但本轮未复测）。
