@@ -86,6 +86,16 @@ PlayFab 兜底 ⇒ 若双机同 Steam 好友时数据面走 SDR，则阶段2 **�
 
 **顺序**：E1 → E4（都只读、无风险）→ E2（需用户配合）→ E3（只读）→ 再定 M1 之后路线。
 
+**2026-11-21 已完成（结果见 [STAGE2-E1-E3-E4-RESULTS](STAGE2-E1-E3-E4-RESULTS-2026-11-21.md)）**：
+
+| 实验 | 结论 | 对路线的影响 |
+|---|---|---|
+| E1 | **✓ PlayFab 标题 `974A9` 在线**（DNS→Azure Front Door；API 返回结构化 PlayFab `401 NotAuthenticated/1074`） | 方案A 的"标题已死"风险解除；"是否接受 Steam 实体登录"留待 E2 |
+| E3 | **✓✓ 两个 DLL 与公开 SDK 逐字节一致**（Party 1.10.16 NuGet `DE34667C…`；Multiplayer 1.8.7 GitHub `95BC5F95…`） | 方案B API 面=公开头文件，成本从"未知"变"可估"；仍不作本阶段投入 |
+| E4 | **⚠ B10 未证**（settings.ini 只有 title_ids；exe 仅一条 network.cpp 提示串；无开关名/无绑定/数据表 0 命中） | 方案C 不能当兜底；改为持续监控 PlayFab 存活 |
+| E2/E5 | 未做（E2 需志愿者与第二台机器；E5 抓包可随时补） | 等预检结果 |
+
+
 ## 6. 里程碑与验收门禁
 
 | 里程碑 | 内容 | 验收（可测） | 估时（agent 并行口径） |
