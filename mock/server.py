@@ -176,7 +176,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001
                 logger.log(f"{_now_stamp()} !! body-shape 采集失败: {exc!r}")
         try:
-            resp = mock.handle(self.command, self.path, body, headers)
+            resp = mock.handle(self.command, self.path, body, headers,
+                               client_addr=(self.client_address[0] if self.client_address else ""))
         except Exception as exc:  # noqa: BLE001
             logger.log(f"{_now_stamp()} !! {self.command} {self.path} handler 异常: {exc!r}")
             resp = Response(500, b'{"error":"handler crashed"}', "application/json", "error")

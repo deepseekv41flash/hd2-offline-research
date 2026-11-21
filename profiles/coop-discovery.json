@@ -1,0 +1,38 @@
+{
+  "schema": "hd2-offline-mock-profile-v1",
+  "note": "阶段2 联机发现层：多客户端大厅服务（M1）。与产品 profile 无关；两台客户端都指向同一后端。",
+  "data_dir": "samples/store-season",
+  "cert_dir": "state/certs",
+  "log_dir": "state/logs",
+  "bind": {
+    "host": "0.0.0.0",
+    "port": 443,
+    "crl_port": 18081
+  },
+  "timeshift": {
+    "enabled": true,
+    "refresh_span_seconds": 604800
+  },
+  "fallback": {
+    "status": 200,
+    "body": "{}"
+  },
+  "lobby": {
+    "mode": "discovery",
+    "echo_put": false,
+    "ttl_seconds": 600,
+    "max_members": 4
+  },
+  "body_shapes": {
+    "enabled": false,
+    "dir": "state/evidence/stage2",
+    "paths": ["/api/Account/Login", "/api/lobby", "/api/lobby/*/member", "/api/lobby/accounts"]
+  },
+  "mission": {
+    "keep_template_outcome": false
+  },
+  "identity": {
+    "account_id": "76561190000000000",
+    "player_name": "Helldiver"
+  }
+}

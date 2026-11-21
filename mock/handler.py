@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from . import timeshift
+from . import discovery, timeshift
 from .capture import CaptureStore, CapturedEntry
 from .rules import Match, ReplayIndex, match_state_route, split_path
 from .state import MockState
@@ -43,10 +43,21 @@ class Response:
 DEFAULT_PROFILE: dict = {
     "timeshift": {"enabled": True, "refresh_span_seconds": 7 * 86400},
     "fallback": {"status": 200, "body": "{}"},
-    "lobby": {"mode": "replay", "echo_put": False},
+    "lobby": {"mode": "replay", "echo_put": False,
+              # discovery 模式（阶段2 联机发现层）专用：
+              "ttl_seconds": 600, "max_members": 4},
+
     "mission": {"keep_template_outcome": False},
     "identity": {"account_id": "76561190000000000", "player_name": "Helldiver"},
 }
+
+
+def _account_hint(headers: dict) -> str:
+    """显式账号头：`X-HD2-Account`（我方工具/探针用；真实客户端没有该头，走 IP 归属）。"""
+    try:
+        return str((headers or {}).get("x-hd2-account") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _deep_merge(base: dict, patch: dict) -> dict:
@@ -94,6 +105,14 @@ class MockHandler:
             player_name=str(ident.get("player_name", "Helldiver")),
             keep_template_outcome=bool(self.profile["mission"].get("keep_template_outcome")),
         )
+        lobby_cfg = self.profile.get("lobby") or {}
+        self.discovery = (
+            discovery.DiscoveryLobby(
+                ttl_seconds=float(lobby_cfg.get("ttl_seconds", discovery.DEFAULT_TTL_SECONDS)),
+                max_members=int(lobby_cfg.get("max_members", discovery.DEFAULT_MAX_MEMBERS)),
+            )
+            if lobby_cfg.get("mode") == "discovery" else None
+        )
         self.now_fn = now_fn or (lambda: datetime.now(timezone.utc))
         self.anchors = store.war_anchors()
         self.mission_end_template = mission_end_template
@@ -109,7 +128,7 @@ class MockHandler:
 
     # ---- 入口 -------------------------------------------------------------
     def handle(self, method: str, raw_path: str, body: bytes = b"",
-               headers: dict | None = None) -> Response:
+               headers: dict | None = None, client_addr: str = "") -> Response:
         method = (method or "GET").upper()
         self.stats["requests"] += 1
         base, query = split_path(raw_path)
@@ -121,7 +140,8 @@ class MockHandler:
         route = match_state_route(method, raw_path)
         if route is not None:
             name, params = route
-            resp = self._dispatch_state(name, params, method, raw_path, query, body)
+            resp = self._dispatch_state(name, params, method, raw_path, query, body,
+                                        client_addr=client_addr, headers=headers or {})
             self.stats["state"] += 1
             self._record(method, raw_path, body, resp)
             return resp
@@ -173,12 +193,17 @@ class MockHandler:
 
     # ---- 有状态端点 -------------------------------------------------------
     def _dispatch_state(self, name: str, params: dict, method: str, raw_path: str,
-                        query: str, body: bytes) -> Response:
+                        query: str, body: bytes, *, client_addr: str = "",
+                        headers: dict | None = None) -> Response:
         src = f"state:{name}"
         payload = parse_json_body(body)
         st = self.state
+        headers = headers or {}
         try:
             if name == "account_login":
+                if self.discovery is not None:
+                    return self._json(self.discovery.login(client_addr=client_addr, body=payload),
+                                      source="discovery:account_login")
                 return self._json(st.login(), source=src)
             if name == "report_position":
                 return self._json({}, source=src)
@@ -202,7 +227,33 @@ class MockHandler:
             if name == "mission_session":
                 return Response(202, b"", "application/json", source=src)
 
-            # ---- 大厅 ----
+            # ---- 大厅（阶段2：discovery 模式由多客户端发现层接管）----
+            disc = self.discovery
+            if disc is not None:
+                account = disc.account_for(client_addr=client_addr,
+                                           account_hint=_account_hint(headers))
+                if name == "lobby_put":
+                    saved = disc.put(account, payload if isinstance(payload, dict) else {})
+                    echo = bool(self.profile["lobby"].get("echo_put"))
+                    return self._json(saved if (echo and saved is not None) else {},
+                                      source="discovery:lobby_put"
+                                      + (":conflict" if saved is None else ""))
+                if name == "lobby_accounts":
+                    return self._json(disc.accounts(account), source="discovery:lobby_accounts")
+                if name == "lobby_clear":
+                    disc.clear(account)
+                    return self._json({}, source="discovery:lobby_clear")
+                if name == "lobby_get":
+                    lobby = disc.get(str(params.get("lobby_id", "")))
+                    if lobby is not None:
+                        return self._json(lobby, source="discovery:lobby_get")
+                    return self._json({}, source="discovery:lobby_get:unknown")
+                if name == "lobby_member":
+                    lobby = disc.join(account, str(params.get("lobby_id", "")), payload)
+                    return self._json(lobby or {}, source="discovery:lobby_member"
+                                      + (":rejected" if lobby is None else ""))
+                return self._json({}, source=src)
+
             if name == "lobby_put":
                 lobby = st.lobby_put(payload if isinstance(payload, dict) else {})
                 echo = bool(self.profile["lobby"].get("echo_put"))
@@ -230,6 +281,7 @@ class MockHandler:
             if name == "lobby_member":
                 lobby = st.lobby_member(str(params.get("lobby_id", "")), payload,
                                         default_account=st.account_id)
+                return self._json(lobby or {}, source=src)
                 return self._json(lobby or {}, source=src)
             if name == "progression_customize":
                 return self._json(st.set_customization(payload, self.customize_template),
