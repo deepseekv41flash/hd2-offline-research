@@ -34,3 +34,10 @@ def test_conformance_with_closed_policy_passes():
     results = run_checks(_build_in_process(unknown_lobby="closed"), unknown_policy="closed")
     failed = [r for r in results if not r["ok"]]
     assert not failed, "失败项: " + "; ".join(f"{r['check']} ({r['detail']})" for r in failed)
+
+
+def test_conformance_with_error404_policy_passes():
+    """实机 A/B 结论：未知厅回 HTTP 404 时客户端会停止轮询 → 该策略也要全绿。"""
+    results = run_checks(_build_in_process(unknown_lobby="error:404"), unknown_policy="error404")
+    failed = [r for r in results if not r["ok"]]
+    assert not failed, "失败项: " + "; ".join(f"{r['check']} ({r['detail']})" for r in failed)

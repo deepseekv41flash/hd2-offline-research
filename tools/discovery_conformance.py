@@ -287,7 +287,8 @@ def run_checks(transport, *, unknown_policy: str = "empty") -> list[dict]:
         ctx.req("DELETE", "/api/lobby/clear", b"null", account=ctx.a)
         st_after, body_after, _ = ctx.req("GET", f"/api/lobby/{ctx.lobby_a}", account=ctx.b)
         doc_after = _json_body(body_after) or {}
-        ok = st_after == 200 and (doc_after == {} or doc_after.get("numLobbyMembers") in (0, None))
+        ok = (st_after == 200 and (doc_after == {} or doc_after.get("numLobbyMembers") in (0, None))
+              or st_after == 404)
         add("C09 clear 后厅回收", ok, f"status={st_after} body={str(doc_after)[:80]}")
 
         # C10 未知厅语义
@@ -296,6 +297,8 @@ def run_checks(transport, *, unknown_policy: str = "empty") -> list[dict]:
         doc_u = _json_body(body_u) or {}
         if unknown_policy == "empty":
             ok = st_u == 200 and doc_u == {}
+        elif unknown_policy == "error404":
+            ok = st_u == 404
         else:
             ok = st_u == 200 and doc_u and doc_u.get("numLobbyMembers") in (0,) and not _members(doc_u)
         add(f"C10 未知厅语义({unknown_policy})", ok,
@@ -343,8 +346,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--host", default="", help="SNI/Host 覆盖（经中继时用 api.live.prod…）")
     ap.add_argument("--connect-to", default="", help="实际连接地址 host:port")
     ap.add_argument("--insecure", action="store_true", help="跳过 TLS 校验")
-    ap.add_argument("--unknown-policy", choices=("empty", "closed"), default="empty",
-                    help="未知厅响应契约：empty=当前 {}；closed=目标设计（关闭态）")
+    ap.add_argument("--unknown-policy", choices=("empty", "closed", "error404"), default="empty",
+                    help="未知厅响应契约：empty={}；closed=200 关闭态；error404=HTTP 404（实机验证最佳）")
     ap.add_argument("--json-out", default="", help="把结果写到 JSON 文件")
     args = ap.parse_args(argv)
 

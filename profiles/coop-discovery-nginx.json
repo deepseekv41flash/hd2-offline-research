@@ -25,7 +25,7 @@
     "echo_put": true,
     "ttl_seconds": 600,
     "max_members": 4,
-    "unknown_lobby": "closed",
+    "unknown_lobby": "error:404",
     "persist": "state/discovery-state.json",
     "tombstone_ttl_seconds": 1800
   },

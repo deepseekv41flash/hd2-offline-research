@@ -125,3 +125,16 @@ accountId 学习并写入 + 刷新 numLobbyMembers」。
 | P2 generation 下发 | 🟡 内部已有 generation 统计，未对外暴露 | — |
 
 仍待校准的未知项见 §5（真实服务端回包、客户端收到关闭态的行为），B8 实验会回答第 2 条。
+
+## 8 实机 A/B：`200 关闭态` vs `HTTP 404`（2026-11-21 23:40，结论：404 更好）
+
+客户端在飞船里一直轮询一个已关闭的旧厅 `a75760fe`（A 机日志每 ~15 s 一次）。现场做了 A/B：
+
+| 策略 | 客户端行为 |
+|---|---|
+| `200` + 关闭态 body（lobbyId/players=[]/numLobbyMembers=0） | **继续每 15 s 轮询**，永不停止（整晚持续） |
+| `HTTP 404` + `{"error":"lobby not found"}` | **23:40:32 收到 404 后立即停止轮询**（此后 60 s 内 0 次请求） |
+
+→ 设计结论修订：**未知/已关闭大厅应回 HTTP 错误（404），而不是 200 关闭态 body**。
+客户端的真实服务端很可能就是 4xx（它能正确识别并停止重试）。本仓库 profile 默认值已改为
+`unknown_lobby: "error:404"`（`profiles/coop-discovery-nginx.json`），P0-1 的"终态 body"仅保留作对照。

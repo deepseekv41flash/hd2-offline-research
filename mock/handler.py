@@ -267,6 +267,14 @@ class MockHandler:
                         # 终态回答：让客户端知道"厅已经没了"，而不是空对象（它会把空对象当加载中）
                         return self._json(_closed_lobby_body(res),
                                           source=f"discovery:lobby_get:closed:{res.get('reason', '')}")
+                    if policy.startswith("error"):
+                        # 实验策略：直接 HTTP 错误（404/400），用于验证客户端对"不存在"的真实期待
+                        try:
+                            code = int(policy.split(":", 1)[1])
+                        except (IndexError, ValueError):
+                            code = 404
+                        return Response(code, b'{"error":"lobby not found"}', "application/json",
+                                        f"discovery:lobby_get:error{code}")
                     return self._json({}, source="discovery:lobby_get:unknown")
                 if name == "lobby_member":
                     lobby = disc.join(account, str(params.get("lobby_id", "")), payload)
