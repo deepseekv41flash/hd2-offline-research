@@ -96,3 +96,18 @@ EAC 启动器日志写入 `%APPDATA%\EasyAntiCheat\…`（系统行为，非本�
 ⇒ 本节把 §0 的 ✗ 否证补上「差在哪一层」：**L1 零售包无可执行替代目标 + L2 游戏代码无降级分支**。
 完整对照（含证据表、复现命令、三态判定）见 [T8b-BA-EACOFF-MECHANISM-2026-11-21.md](T8b-BA-EACOFF-MECHANISM-2026-11-21.md)。
 
+## 8. 归因修正（2026-11-21 15:4x，见 [T8c](T8c-EACOFF-PATCH-COST-2026-11-21.md)）
+
+§3 把退出**归因**为「游戏本体硬依赖 `EOS_AntiCheatClient`」，该归因只来自 `.rdata` 里的日志字符串，
+**运行层未证实**。本轮补证：
+
+- `helldivers2.exe` 的 `.text`（21.5 MB，熵 **8.0000**）与 `.pdata`（熵 **7.9998**）在磁盘上是**密文**，
+  由 `preloader.dll` 装载时解密；exe 只导入 `preloader.dll!#1` 一个序号函数，无 PDB/RTTI
+  ⇒ **对反作弊日志串做全 .text 穷举引用扫描得到 0 命中**（不是编码特殊，是引用方为密文）。
+- Windows 事件日志近 8 小时**没有** `helldivers2` 相关事件 ⇒ 退出是**主动 `ExitProcess(0xC0000244)`**，非崩溃。
+- A/B：直启 77 ms / 直启+`EOS_USE_ANTICHEATCLIENTNULL=1` 188 ms，**同一退出码** ⇒ 官方 null-client 不救。
+- ⇒ 退出源候选有三：① 游戏逻辑失败分支 ② `preloader.dll` 加固壳校验 ③ EAC 启动器握手缺失。**尚未区分**，
+  需调试器抓 `NtTerminateProcess`/`ExitProcess` 调用栈（约 30 min，需装 Windows SDK Debuggers）。
+
+**结论不变**：零售版 HD2 无合法 EAC-off 路径（启动项层面见 §7 + [T8b](T8b-BA-EACOFF-MECHANISM-2026-11-21.md)）；
+变的只是「为什么退出」的确切层，记为 `⚠ 未证`。
