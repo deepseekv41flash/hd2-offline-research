@@ -101,3 +101,9 @@ rm -f /www/server/panel/vhost/nginx/hd2-discovery.conf
 4. **两台客户端不能同时用一个账号**：反代形态靠 `X-Real-IP` 归属账号；同一出口 IP 的两台机器会被视为同一账号（同一个 NAT 下的两人会撞）。E2 是两地两人，不触发；后续 4 人局需注意。
 5. **服务器 A 是业务机**：我们只加了 `hd2-discovery.conf` + 证书目录两个路径；每次动 nginx 都跑了 `nginx -t`，失败不 reload。业务回归已测，但长时间运行仍需观察。
 6. **部署源码在 `/root/hd2-deploy/src`**（非版本库目录），重装/升级需重新上传 tar 包。
+7. **不需要新增 DNS A 记录**（2026-11-21 核对）：
+   - 客户端解析 `api.live.prod.thehelldiversgame.com` 走系统解析器，**hosts 优先于 DNS**；测试包已写死 `106.52.201.42 <域名>`，DNS 记录不会被用到；而且该域名的权威区在 Azure（`azuredns-hostmaster.microsoft.com`），我们加不了记录。
+   - 该域名当前 A 记录 `172.200.240.121`（Azure Front Door），**无 AAAA 记录**（AliDNS 实测）→ 不存在「IPv6 绕过 hosts」的风险，hosts 只写 IPv4 行即可。
+   - nginx 反代按 SNI/`server_name` 路由，与 DNS 无关；`healthcheck.sh` 用 `curl --resolve` 伪造解析即可自检。
+   - 只有在想要「人类可记的运维入口」（如给 `/health` 监控用一个自有子域）或未来把 CRL 分发点改成公网 URL 时，才**可选**加一条自有域名的 A 记录；对 E2 无必要，也建议先不加（减少公网扫描面）。
+
