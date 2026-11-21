@@ -19,6 +19,8 @@ PlayFab 与 Sony 侧不需要接管。**
 | `974a9.playfabapi.com`（PlayFab 大厅/Party/QoS） | **不接管**（不可达时客户端只是重试，不阻断单人） | T7 R1/R4 + T7b |
 | Sony PC（`crs/testament/clientconfig/pss-cloud`） | **不接管**（单机流程里几乎不出现；出现也只是崩溃上报/配置） | T7 R3/R5 + T7b-2 |
 
+**产品化复用**：上表的 TLS/证书/信任安装不需要阶段1 重做 —— 产品线已有完整实现（[hd2-proxy-toolkit](https://github.com/deepseekv41flash/hd2-proxy-toolkit)：自动续期 + `certs renew` + `install`/GUI「安装/修复」+ trusted 告警 + CRL）。
+
 **整局验收**（T7b，两轮，均 59 请求 / 0 非 200 / 0 fallback）：
 
 | 轮次 | 形态 | 主界面 | 进图 | 结算 |
@@ -54,13 +56,21 @@ PlayFab 与 Sony 侧不需要接管。**
 
 ## 5. 遗留项（不阻塞阶段1 结论）
 
+> **证书生命周期已由产品线解决，不再是遗留项**：研究线用的「2 天临时 CA」只是实验手段；
+> 产品化形态直接复用 [hd2-proxy-toolkit](https://github.com/deepseekv41flash/hd2-proxy-toolkit) 的既有方案：
+> `config.cert = {days: 2, min_remaining_hours: 12, auto_renew: true}`（**自动续期**）、
+> CLI `hd2proxy.exe certs status` / `certs renew`、`hd2proxy.exe install` 与 GUI「安装 / 修复（UAC）」
+> （hosts + 根信任导入）、`cert_status` 的 trusted 状态与 <12 h 告警、以及内置 CRL 服务。
+> ⇒ 阶段1 产品化时**不需要**研究线再实现证书续期；研究仓的 `mock/certs.py` 仅用于离线实验。
+
+
 | # | 项 | 状态 |
 |---|---|---|
 | 1 | 「完全无外网」形态：EAC-on 会失败，需 EAC-off 直启（`bin\helldivers2.exe`）；历史实测可行但本轮未复测 | ⚠ 未证 |
 | 2 | B9 里「给账号 B 绑定 PSN」正向对照（要动用户 PSN 账号） | ⚠ 未证（H1 记 ✓ 非 ✓✓） |
 | 3 | UDP/DTLS 数据面（EOS/Steam 中继）与 `steam.exe` 进程内容：加密或不在 TCP 工具范围 | ⚠ 不可得 |
 | 4 | 单人分支覆盖：长任务/失败撤离/被踢未测 | 部分覆盖 |
-| 5 | 研究 CA 有效期 2 天：产品化需处理证书续期与信任重装 | 已知工程项 |
+| 5 | ~~研究 CA 有效期 2 天需处理续期~~ **已由产品线承担、不构成问题** | 已解决（见下） |
 
 ## 6. 对阶段2（自建联机）的三条硬输入
 

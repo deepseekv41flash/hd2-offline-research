@@ -558,6 +558,7 @@ python tools\replay_client.py --src samples\store-season --mode server `
 | 转发器 | 判别实验后即停 | 无残留进程 |
 
 **留给后续（不影响本档结论）**：
-* 证书有效期 46 h、过期后 mock 需 `cert-gen` + `cert-install` 重装才可再用（研究线不常驻）；
+* 研究线临时 CA 有效期 46 h、过期后 mock 需 `cert-gen` + `cert-install` 重装（研究线不常驻）；
+  **产品化不需要处理这一点**：产品线已实现证书自动续期与信任修复（[hd2-proxy-toolkit](https://github.com/deepseekv41flash/hd2-proxy-toolkit): `auto_renew` / `certs renew` / `install`（UAC）/ trusted 告警 / CRL）。
 * 线 B（B1/B8）需要第二台机器与 PlayFab 标题存活性验证，按用户排序暂缓；
 * B9 的唯一残留缺口：未做"给账号 B 绑定 PSN"的正向对照（要动用户的 PSN 账号），故 H1 记 ✓ 而非 ✓✓。
