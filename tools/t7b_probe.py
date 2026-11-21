@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -36,15 +37,18 @@ MISSION_END = "/api/Operation/Mission/end"
 MISSION_ABANDON = "/api/Operation/Abandon"
 
 
-def start_mock() -> subprocess.Popen | None:
+def start_mock(capture_bodies: bool = False) -> subprocess.Popen | None:
     """443 没监听就起 mock；返回 Popen 或 None（已在跑）。"""
     listeners = _ps("(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | "
                     "Where-Object { $_.LocalPort -eq 443 } | Measure-Object).Count")
     if (getattr(listeners, "stdout", "") or "").strip() not in ("", "0"):
         print("[t7b] mock 已在监听 443")
         return None
-    proc = subprocess.Popen([sys.executable, str(REPO / "tools/mockctl.py"), "serve"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=str(REPO))
+    mock_cmd = [sys.executable, str(REPO / "tools/mockctl.py"), "serve"]
+    if capture_bodies:
+        mock_cmd.append("--capture-bodies")
+    proc = subprocess.Popen(mock_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            cwd=str(REPO))
     for _ in range(20):
         time.sleep(1)
         listeners = _ps("(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | "
@@ -61,6 +65,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--proxy-port", type=int, default=18092)
     p.add_argument("--timeout-menu", type=int, default=180)
     p.add_argument("--timeout-mission", type=int, default=900)
+    p.add_argument("--launch", choices=["steam", "exe"], default="steam",
+                   help="steam=正常 EAC-on 启动；exe=直启 bin/helldivers2.exe（EAC-off）")
+    p.add_argument("--exe", default=r"D:\SteamLibrary\steamapps\common\Helldivers 2\bin\helldivers2.exe")
+    p.add_argument("--menu-only", action="store_true", help="只验证到主界面（不等待任务链）")
+    p.add_argument("--capture-bodies", action="store_true", help="mock 以 --capture-bodies 启动（记录登录体 schema）")
+    p.add_argument("--sslkeylog", type=Path, default=None, help="P3：设置 SSLKEYLOGFILE（探测 TLS/DTLS 能否解）")
+    p.add_argument("--capture-pcap", type=Path, default=None, help="P3：会话期间用 dumpcap 抓包")
     p.add_argument("--blackhole", default="974a9.playfabapi.com",
                    help="逗号分隔：本轮要黑洞的域名（默认只 PlayFab；阶段1 验收可加 Sony 四条域）")
     p.add_argument("--cert-dir", type=Path, default=REPO / "state/certs")
@@ -77,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     if game_running():
         print("[t7b] 先关闭已在运行的游戏…")
         kill_game()
-    mock_proc = start_mock()
+    mock_proc = start_mock(capture_bodies=args.capture_bodies)
     baseline = args.mock_log.stat().st_size if args.mock_log.exists() else 0
 
     log_path = args.out_dir / "mitm.jsonl"
@@ -96,14 +107,36 @@ def main(argv: list[str] | None = None) -> int:
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=str(REPO))
     time.sleep(2.5)
     old = get_ie_proxy()
-    result = {"name": args.name, "blackhole": args.blackhole, "reached_main_menu": False,
+    result = {"name": args.name, "launch": args.launch, "blackhole": args.blackhole, "reached_main_menu": False,
               "mission_started": False, "mission_ended": False, "abandoned": False,
               "elapsed_menu_s": None, "elapsed_mission_s": None, "new_lines": 0,
               "non_200": 0, "fallback": 0, "error": None, "chain": []}
     try:
         set_ie_proxy(f"127.0.0.1:{args.proxy_port}")
-        print(f"[t7b] IE 代理 → 127.0.0.1:{args.proxy_port}（PlayFab 已黑洞），启动游戏…", flush=True)
-        subprocess.Popen(["cmd", "/c", "start", "steam://rungameid/553850"], shell=False)
+        print(f"[t7b] IE 代理 → 127.0.0.1:{args.proxy_port}（黑洞={args.blackhole or '无'}），启动游戏（{args.launch}）…", flush=True)
+        env = dict(os.environ)
+        if args.sslkeylog:
+            args.sslkeylog.parent.mkdir(parents=True, exist_ok=True)
+            env["SSLKEYLOGFILE"] = str(args.sslkeylog)
+        cap = None
+        if args.capture_pcap:
+            args.capture_pcap.parent.mkdir(parents=True, exist_ok=True)
+            if args.capture_pcap.exists():
+                args.capture_pcap.unlink()
+            dur = args.timeout_menu + args.timeout_mission + 60
+            cap = subprocess.Popen(
+                [r"C:\Program Files\Wireshark\dumpcap.exe", "-i", "9", "-i", "11",
+                 "-f", "udp or tcp port 443 or tcp port 7897",
+                 "-a", f"duration:{dur}", "-w", str(args.capture_pcap)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(1.5)
+        if args.launch == "exe":
+            exe = Path(args.exe)
+            if not exe.exists():
+                raise SystemExit(f"找不到 exe: {exe}")
+            subprocess.Popen([str(exe)], cwd=str(exe.parent.parent), env=env)
+        else:
+            subprocess.Popen(["cmd", "/c", "start", "steam://rungameid/553850"], shell=False)
 
         # ---- 阶段1：等主界面 ----
         t0 = time.time()
@@ -120,8 +153,13 @@ def main(argv: list[str] | None = None) -> int:
         if not result["reached_main_menu"]:
             result["error"] = "timeout: 未到主界面"
             return 1
-        print(f"[t7b] 已到主界面（{result['elapsed_menu_s']}s）。**请在游戏里打完整一局**"
-              f"（进图→局内→撤离结算→回船），最长等待 {args.timeout_mission}s…", flush=True)
+        print(f"[t7b] 已到主界面（{result['elapsed_menu_s']}s）", flush=True)
+        if args.menu_only:
+            time.sleep(8)
+            result["error"] = None
+            raise SystemExit(0)
+        print(f"[t7b] **请在游戏里打完整一局**（进图→局内→撤离结算→回船），"
+              f"最长等待 {args.timeout_mission}s…", flush=True)
 
         # ---- 阶段2：等任务链（用户操作） ----
         t1 = time.time()
@@ -160,6 +198,12 @@ def main(argv: list[str] | None = None) -> int:
         kill_game()
         restore_ie_proxy(old)
         proxy.terminate()
+        if cap is not None:
+            cap.terminate()
+            try:
+                cap.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                cap.kill()
         try:
             proxy.wait(timeout=5)
         except subprocess.TimeoutExpired:
