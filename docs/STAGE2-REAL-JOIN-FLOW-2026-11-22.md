@@ -218,3 +218,33 @@ A 机 conformance（--url https://api.live.prod… --connect-to 127.0.0.1:443）
    我们当前不加等待，靠「PUT 先于加入」的时序；若复测暴露问题再加。
 4. `warId`/`territoryId` 是否由服务端强制填（真实在飞船厅是 `-1`，说明不强制）。
 5. E2 遗留的 PlayFab Party 4104/4379 是否仍会出现（需双机复测判定）。
+
+## 8 环境回滚记录（2026-11-22 00:2x，已实测校验）
+
+全通基线（hd2proxy passthrough + PlayFab MITM）已全部撤销，机器回到「官方直连」状态：
+
+| 项 | 动作 | 校验结果 |
+|---|---|---|
+| hd2proxy 引擎 | 停进程（后台 job 取消） | 无 `hd2proxy.exe` 进程 |
+| hosts | `hd2proxy.exe uninstall` + 清掉残留 `HD2-STAGE2-TUNNEL` 行（备份 `hosts.bak-hd2rollback`） | hosts 无任何 `helldivers` 行 |
+| DNS | `ipconfig /flushdns` | `api.live.prod.thehelldiversgame.com` → `68.154.15.59`（真实官方） |
+| 会话证书信任 | `uninstall` 删除 `D6B85787…` | LocalMachine\Root 无 HD2 证书 |
+| 历史测试 CA | 清掉两个存储里所有 `HD2 *` 自签 CA（LocalMachine 4 个 + CurrentUser 10 个） | 4 个存储扫描均为 0 |
+| PlayFab MITM | 停进程 | 无 python MITM 进程 |
+| 系统代理 | `tools/system_proxy.ps1 -Action Restore` | 回到用户常态 `127.0.0.1:7897`（Clash） |
+| 端口 | — | `:443` 无监听 |
+| 服务/计划任务 | — | 无 `hd2proxy` 服务、无 HD2 计划任务 |
+| **端到端** | 直连官方 API | `GET /api/WarSeason/current/WarId` → **HTTP 200**（0.86 s） |
+
+> 注意：**研究 CA 也被清掉了**（`CN=HD2 Offline Research CA`，`state/certs/ca.pem` 本地文件仍在，
+> 有效期到 2026-11-23 03:52 UTC）。E3 重建时用户级重新导入即可：
+> `certutil -user -addstore Root state/certs/ca.cer`。
+
+### E3 重建清单（按需，约 10 分钟）
+
+1. `certutil -user -addstore Root state/certs/ca.cer`（用户级，无需 UAC）；
+2. hosts 加一行 → `100.67.88.219 api.live.prod.thehelldiversgame.com # HD2-STAGE2-TUNNEL`（需一次 UAC 写 hosts）；
+3. 起中继：`tools/e2_tunnel.py --via server2 --listen-host 100.67.88.219 --listen-port 443 --target 106.52.201.42:443`；
+4. A 机 `hd2-discovery` 已在线且 14/14 通过，**无需改动**；
+5. PlayFab 保持真实（不启 MITM）——E3 验的是官方 API 侧的公钥交换；
+6. 志愿者机器：同样要装研究 CA + hosts 指向**本机中继**（或让中继对志愿者可达）。
