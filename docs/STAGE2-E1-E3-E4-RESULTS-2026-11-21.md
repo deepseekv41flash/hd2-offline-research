@@ -119,3 +119,49 @@ $ curl https://974a9.playfabapi.com/            [HTTP 403, 0.86 s]
   - `https://github.com/PlayFab/PlayFabMultiplayer/releases/download/v1.8.7/Microsoft.PlayFab.PlayFabMultiplayer.Cpp.Windows.zip`
   - 期望：nupkg `3C8A5170…`、zip `F1331238…`、DLL `DE34667C…` / `95BC5F95…`
 - **E4**：字符串检索脚本在 `state/evidence/e4/`（对 exe/dl_bin/game.dll 的只读扫描）。
+
+---
+
+## 7. E5 补做：PlayFab QoS 与大厅链路的时序（2026-11-21）
+
+> 用户批准按「1→3→2」顺序开工；本条为第 2 项（E5）。方法：T4 的整机 pcap（`D:\mod	mp	4cp-20261121-0144.pcapng`，179.6 s）
+> 用 tshark 取 DNS/TLS/UDP 时间戳，与 T6a 的 MITM 会话（`state/evidence/t6/mitm-run1.jsonl`）的 HTTP 调用顺序交叉对照。
+
+### 7.1 时序（pcap 会话，相对首帧 0 s）
+
+| 相对时间 | 事件 | 证据 |
+|---|---|---|
+| **+29.76 s** | DNS 查询 `974A9.playfabapi.com` | `dns.qry.name` |
+| **+29.88 s** | TLS ClientHello（SNI `974a9.playfabapi.com`） | `tls.handshake.extensions_server_name` |
+| **+30.48 s** | DNS 查询 `mpsqosprod.westus.cloudapp.azure.com` | QoS 主机名出现 |
+| **+31.37 s → +33.31 s** | **UDP 3075 QoS 探测突发**：120 包 / 60 组请求-响应，18 个 Azure 区，包长 88 B，持续 **1.95 s**（中位间隔 4 ms，最大 382 ms） | `udp.port==3075` 时间序列 |
+| +33.75 s / +40.41 s | 再次 TLS 连接到 `974a9.playfabapi.com`（大厅/Party 相关调用） | 同上 |
+
+### 7.2 HTTP 调用顺序（MITM 会话 run1，单机进厅流程）
+
+```
+11:54:31  api.epicgames.dev  /sdk/v1/default                     ← EOS 配置
+11:54:32  974a9.playfabapi   /MultiplayerServer/ListPartyQosServers  ← 第一个 PlayFab 调用（取 QoS 区列表）
+11:54:32  974a9.playfabapi   /pubsub/negotiate
+11:54:35  974a9.playfabapi   /Lobby/SubscribeToLobbyResource     ← 先订阅大厅更新
+11:54:49  974a9.playfabapi   /Party/RequestParty                 ← 先申请 Party 网络
+11:54:50  974a9.playfabapi   /Lobby/CreateLobby                  ← 再建大厅（响应 1092 B）
+11:54:52  974a9.playfabapi   /Lobby/SubscribeToLobbyResource
+11:54:53  974a9.playfabapi   /Lobby/GetLobby
+11:54:54+ 974a9.playfabapi   /Lobby/UpdateLobby ×N
+```
+
+### 7.3 结论（对阶段2 设计）
+
+1. **QoS 是一次性突发、不经过我们的后端**：探测打的是 `mpsqosprod.<region>.cloudapp.azure.com` 的 UDP 3075，
+   由客户端在拿到 `ListPartyQosServers` 返回的区列表后立刻并发探测（2 s 内完成）。
+   ⇒ **自建发现层不需要实现 QoS**；方案A 下它继续走 PlayFab 云即可。
+2. **顺序不可跳**：`ListPartyQosServers` 是第一个 PlayFab 调用，且在 `Party/RequestParty`、`Lobby/CreateLobby` 之前；
+   与 [T7](T7-STAGE1-NECESSITY-2026-11-21.md) R4「伪 200 在 ListPartyQosServers 就放弃」一致。
+   ⇒ 方案B（替身）必须自己实现该调用或显式跳过 QoS，否则游戏永远到不了建房。
+3. **`Party/RequestParty` 早于 `Lobby/CreateLobby`**（实测早 1 s）：Party 网络先于大厅存在；
+   做替身时不能假设"先大厅后 Party"。
+4. **E2 失败诊断顺序**（按链路顺序排查）：
+   ① `ListPartyQosServers` 是否 200 且返回区列表 → ② 是否出现 UDP 3075 探测（抓包）→
+   ③ `Party/RequestParty` / `Lobby/CreateLobby` 是否 200 → ④ 客机是否收到 `lobbyId` 并成功入厅。
+

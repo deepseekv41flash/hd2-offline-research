@@ -93,7 +93,8 @@ PlayFab 兜底 ⇒ 若双机同 Steam 好友时数据面走 SDR，则阶段2 **�
 | E1 | **✓ PlayFab 标题 `974A9` 在线**（DNS→Azure Front Door；API 返回结构化 PlayFab `401 NotAuthenticated/1074`） | 方案A 的"标题已死"风险解除；"是否接受 Steam 实体登录"留待 E2 |
 | E3 | **✓✓ 两个 DLL 与公开 SDK 逐字节一致**（Party 1.10.16 NuGet `DE34667C…`；Multiplayer 1.8.7 GitHub `95BC5F95…`） | 方案B API 面=公开头文件，成本从"未知"变"可估"；仍不作本阶段投入 |
 | E4 | **⚠ B10 未证**（settings.ini 只有 title_ids；exe 仅一条 network.cpp 提示串；无开关名/无绑定/数据表 0 命中） | 方案C 不能当兜底；改为持续监控 PlayFab 存活 |
-| E2/E5 | 未做（E2 需志愿者与第二台机器；E5 抓包可随时补） | 等预检结果 |
+| E5 | **✓ 已完成**：QoS 是 ListPartyQosServers 后的 1.95 s UDP 突发（120 包/60 组），不经过我们后端；Party/RequestParty 早于 Lobby/CreateLobby | 自建发现层不需要实现 QoS；方案B 必须自实现该调用；E2 排障顺序已定 |
+| E2 | 未做（需志愿者与第二台机器） | 等预检结果 |
 
 
 ## 6. 里程碑与验收门禁
