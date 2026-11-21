@@ -1,0 +1,1 @@
+在服务器上先执行：chmod +x install.sh cert-issue.sh healthcheck.sh uninstall.sh

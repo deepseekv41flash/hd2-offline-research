@@ -67,9 +67,11 @@ tools/      抓包分析 / 样本构建 / 回放验证 / 控制台
   t7b_probe.py        T7b 整局验收探针（PlayFab/Sony 黑洞下打一局，自动判定进图/结算并复原代理）
   steam_appinfo.py    T8b 只读解析 Steam appinfo 分片（magic 0x0756442a），导出任一游戏的官方启动项
   discovery_probe.py  阶段2 发现层双客户端探针（--self-test 离线自测 / --url 远端验活）
-tests/      pytest 100 项（含真实抓包矩阵、TLS 端到端、脱敏门禁、B9 schema 采集/对照、TCP 转发）
+  analyze_e2_capture.py  阶段2 E2 抓包判定（Steam SDR vs PlayFab Party，--self-test 可离线验证）
+tests/      pytest 104 项（含真实抓包矩阵、TLS 端到端、脱敏门禁、B9 schema 采集/对照、TCP 转发）
 profiles/   offline-mock.json（与产品 profile 无关的独立配置）
 docs/       阶段1 定稿摘要(STAGE1-FINAL) + 结项档 + A2 主机依赖 + B2/B3 大厅/登录 + T4 出网清单 + T4b 无 PSN + B9 登录体 schema + T6 MITM 取证 + T7 必要性差分 + T8 计划（数据面取证/EAC-off）+ T8 结果（EAC-off ✗ 否证）+ T8-P3（SSLKEYLOGFILE ✗ 对游戏无效）+ T8b（Broken Arrow 关 EAC 机制对照）+ T8c（打补丁跳反作弊的成本评估：加固/加密壳）+ T8d（社区项目 HellForge：免反作弊=固定旧 build；阶段2 替身方案参考） + **阶段2 设计（STAGE2-DESIGN：方案对比/架构/里程碑/判定实验）** + 志愿者环境侦察清单（VOLUNTEER-RECON） + 侦察结果判定（VOLUNTEER-RECON-RESULT：条件通过，差管理员权限） + 预检包（PREFLIGHT-KIT：志愿者以管理员重测改机能力） + 判定实验 E1/E3/E4 结果（PlayFab 存活 / SDK 原版一致 / B10 未证） + 发现层 API 契约与 M1 实现（STAGE2-DISCOVERY-API-CONTRACT）
+docs/ 之外：deploy/discovery/（发现层 Debian/systemd 部署包）、kit/stage2/（客户端双路线测试包 + 测试卡）
 ```
 
 ## 5 分钟跑起来（不需要游戏、不需要管理员）
