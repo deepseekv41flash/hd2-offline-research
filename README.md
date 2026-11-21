@@ -60,6 +60,8 @@ tools/      抓包分析 / 样本构建 / 回放验证 / 控制台
   mockctl.py          唯一入口：ports / cert-* / serve / health / selftest
   compare_shapes.py   B9：两份登录体 schema 对照 + 字节对账 + 差异归因
   tcp_passthrough.py  透明 TCP 转发（不改 hosts 临时连真服务器做对照）
+  mitm_proxy.py       T6a 旁路取证 MITM（CONNECT 代理 + 选择性 TLS 终止 + 只记 schema）
+  analyze_mitm.py     T6a 分析：哪些域名可 MITM / 实际请求 / 响应 schema
 tests/      pytest 77 项（含真实抓包矩阵、TLS 端到端、脱敏门禁、B9 schema 采集/对照、TCP 转发）
 profiles/   offline-mock.json（与产品 profile 无关的独立配置）
 docs/       结项档 + A2 主机依赖侦察 + B2/B3 大厅/登录侦察 + T4 运行时出网清单 + T4b 无 PSN 对照 + B9 登录体 schema
@@ -113,6 +115,7 @@ python tools\replay_client.py --src samples\store-season --mode server `
 | 任务链 / 大厅链状态机（含 Create 回显、connectionString 原样转发） | ✓ 离线（scenario 46 项断言） |
 | **单人任务链（A3）**：`Operation/Create → Mission/Start → Mission/end → Mission/Session(202) → Abandon` | **✓✓ 实机（4 分钟任务正常撤离结算）** |
 | **未绑定 PSN 的整局单人任务（T3b）**：账号 B 进图 → 5.5 分钟局内 → 撤离结算 → 回船 | **✓✓ 实机（49 请求 / 0 非 200 / 0 fallback）** |
+| **旁路连接到底传什么（T6a/MITM）**：PlayFab=大厅+Party 中继分配+QoS 列表；EOS=身份/配置/EAC 反作弊/遥测；Sony CRS=崩溃上报 | **✓✓ 实机**（79 条记录、0 握手失败，见 [T6](docs/T6-MITM-SIDECHANNEL-2026-11-21.md)） |
 | 除 API 主机外的主机依赖（A2） | **✓✓ 运行时抓包完成**：无第二条游戏自有主机；旁路=PlayFab/EOS+EAC/Steam/Sony PC（见 [T4 文档](docs/T4-RUNTIME-EGRESS-2026-11-21.md)） |
 | 出网审计的盲区 | T4 已补：DNS/SNI/UDP 五元组（UDP 3075=PlayFab QoS、3478/3479=Steam SDR、高端口=EOS） |
 | PSN 是否必需 | **非必需**：未绑定 PSN 的 Steam 号可跳过绑定页进船，官方 API 仍是纯本地接管；Sony 侧域名两账号都出现（见 [T4b](docs/T4b-NOPSN-CONTROL-2026-11-21.md)） |

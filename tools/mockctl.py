@@ -57,7 +57,9 @@ def cmd_ports(args) -> int:
 
 def cmd_cert_gen(args) -> int:
     cert_dir = Path(args.dir)
-    meta = certs.generate(cert_dir, host=args.host, days=args.days, crl_port=args.crl_port)
+    hosts = [h.strip() for h in (args.hosts or "").split(",") if h.strip()] or None
+    meta = certs.generate(cert_dir, host=args.host, hosts=hosts, days=args.days,
+                          crl_port=args.crl_port)
     print(f"[cert-gen] {cert_dir}")
     print(f"  mode={meta['mode']} san={meta['san_dns']} not_after={meta['not_after']}")
     print(f"  CA thumbprint={meta['trust_thumbprint_sha1']}")
@@ -247,6 +249,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("cert-gen")
     p.add_argument("--dir", default=str(REPO / "state" / "certs"))
     p.add_argument("--host", default=SNI)
+    p.add_argument("--hosts", default=None,
+                   help="逗号分隔的多 SAN 域名（MITM 用；给了就以它为准）")
     p.add_argument("--days", type=int, default=2)
     p.add_argument("--crl-port", type=int, default=18081)
     p.set_defaults(fn=cmd_cert_gen)

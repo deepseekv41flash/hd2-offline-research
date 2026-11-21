@@ -246,6 +246,23 @@ T3 的结论只在账号 A（已绑 PSN）上验过；本项在**账号 B（未�
 **结论**：单人完整闭环**不依赖 PSN 绑定** —— T3（账号 A）的结论在账号 B 上复现。
 与 T3 的唯一差异是请求体大小（如 `Mission/end` 905 B vs 863 B），属局内数据（击杀/战果）动态差异，不是协议差异。
 
+#### 2.4.8 T6a：旁路连接的内容取证（✓✓，2026-11-21 11:52–11:59）
+
+T4 只拿到「域名/端口/字节数」，不知道旁路在传什么。用研究 CA 做 **MITM**（多 SAN 叶证书 +
+`tools/mitm_proxy.py` 的 CONNECT 代理），两次启动窗口共 **79 条记录、0 次 TLS 握手失败**，
+把 PlayFab / EOS / Sony CRS 的请求响应抽成 schema（不落原值）。详见
+[T6-MITM-SIDECHANNEL-2026-11-21.md](T6-MITM-SIDECHANNEL-2026-11-21.md)。
+
+| 旁路 | 实际是什么（✓✓ 实测） |
+|---|---|
+| `974a9.playfabapi.com` | **联机控制面**：`Lobby/CreateLobby` → 签发 `connectionString`(107)；`Party/RequestParty` → 分配**中继服务器**（FQDN/IP/端口/**DTLS 证书指纹**/Region）；`MultiplayerServer/ListPartyQosServers` → **17 个 Azure 区**（正是 UDP 3075 探测目标）；`pubsub/negotiate`+`Lobby/SubscribeToLobbyResource` → 大厅实时推送；`Event/WriteTelemetryEvents` → 遥测 |
+| `api.epicgames.dev` | **EOS**：`/sdk/v1/*` 客户端配置（gzip，含 39 个服务 BaseUrl、P2P 端口范围、反作弊 Url）；`/auth/v1/oauth/token`；**`/anticheat/v6|v8/*`（EAC 消息，octet-stream，最大 33 KB，占 EOS 流量大头）**；`/telemetry/datarouter/*`；`/notifications/*/connect`(101→WebSocket) |
+| `crs.api.wwsga.me` | **Sony 崩溃/诊断上报**：`POST /games/<uuid>/telemetry`（header 含 build/session/device/crs_url；data 含抓图/录像/扩展 dump/反作弊开关） |
+
+**对线 B 的直接影响** `✓✓`：自建信令能接管「互相看见」，但 **`connectionString` 签发与中继服务器分配都在 PlayFab**
+（B8 的实测答案）——要完全自建联机，需额外解决 PlayFab Party 中继这一层。
+**对线 A 无影响**：这些旁路全断也不影响单机（T3/T3b 已证）。
+
 ---
 
 ## 3. 关键设计（capture → replay 的本地云端）

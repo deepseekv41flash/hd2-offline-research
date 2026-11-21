@@ -55,19 +55,34 @@ def cdp_url(port: int = DEFAULT_CRL_PORT) -> str:
     return f"http://127.0.0.1:{port}/ca.crl"
 
 
-def _leaf_builder(host: str, pub, issuer_name, days: int, crl_port: int,
+def _normalize_hosts(host: str | None, hosts: list[str] | tuple[str, ...] | None,
+                     default: str = DEFAULT_HOST) -> list[str]:
+    """把 `host`/`hosts` 两种写法归一成去重后的域名列表（保持顺序）。"""
+    if hosts:
+        out: list[str] = []
+        for h in hosts:
+            h = str(h).strip()
+            if h and h not in out:
+                out.append(h)
+        if out:
+            return out
+    return [host or default]
+
+
+def _leaf_builder(hosts: list[str], pub, issuer_name, days: int, crl_port: int,
                   issuer_key=None):
     now = datetime.now(timezone.utc)
     b = (
         x509.CertificateBuilder()
-        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host)]))
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hosts[0])]))
         .issuer_name(issuer_name)
         .public_key(pub)
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - timedelta(minutes=5))
         .not_valid_after(now + timedelta(days=days))
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-        .add_extension(x509.SubjectAlternativeName([x509.DNSName(host)]), critical=False)
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(h) for h in hosts]),
+                       critical=False)
         .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
         .add_extension(x509.KeyUsage(
             digital_signature=True, content_commitment=False, key_encipherment=True,
@@ -94,10 +109,12 @@ def _leaf_builder(host: str, pub, issuer_name, days: int, crl_port: int,
     return b
 
 
-def generate(cert_dir: Path | str, *, host: str = DEFAULT_HOST, days: int = 2,
+def generate(cert_dir: Path | str, *, host: str | None = None,
+             hosts: list[str] | tuple[str, ...] | None = None, days: int = 2,
              crl_port: int = DEFAULT_CRL_PORT) -> dict:
-    """签发一套研究线会话证书。返回 session 元数据（同时写 session.json）。"""
+    """签发一套研究线会话证书（可多 SAN）。返回 session 元数据（同时写 session.json）。"""
     out = Path(cert_dir)
+    names = _normalize_hosts(host, hosts)
     out.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc)
 
@@ -112,7 +129,7 @@ def generate(cert_dir: Path | str, *, host: str = DEFAULT_HOST, days: int = 2,
         .not_valid_before(now - timedelta(minutes=5))
         .not_valid_after(now + timedelta(days=days))
         .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
-        .add_extension(x509.NameConstraints(permitted_subtrees=[x509.DNSName(host)],
+        .add_extension(x509.NameConstraints(permitted_subtrees=[x509.DNSName(h) for h in names],
                                             excluded_subtrees=None), critical=True)
         .add_extension(x509.KeyUsage(
             digital_signature=False, content_commitment=False, key_encipherment=False,
@@ -125,7 +142,7 @@ def generate(cert_dir: Path | str, *, host: str = DEFAULT_HOST, days: int = 2,
 
     # ---- 叶子 ----
     leaf_key = _new_key()
-    leaf = (_leaf_builder(host, leaf_key.public_key(), ca.subject, days, crl_port,
+    leaf = (_leaf_builder(names, leaf_key.public_key(), ca.subject, days, crl_port,
                           issuer_key=ca_key)
             .sign(ca_key, hashes.SHA256()))
 
@@ -147,12 +164,12 @@ def generate(cert_dir: Path | str, *, host: str = DEFAULT_HOST, days: int = 2,
     (out / "ca.crl").write_bytes(crl.public_bytes(serialization.Encoding.DER))
     del ca_key
 
-    problems = _check(leaf, ca, host, days)
+    problems = _check(leaf, ca, names, days)
     meta = {
-        "schema": "hd2-offline-research-cert-v1",
-        "host": host,
+        "schema": "hd2-offline-research-cert-v2",
+        "host": names[0],
         "mode": "ca",
-        "san_dns": [host],
+        "san_dns": names,
         "days": days,
         "not_before": leaf.not_valid_before_utc.isoformat(),
         "not_after": leaf.not_valid_after_utc.isoformat(),
@@ -173,12 +190,20 @@ def generate(cert_dir: Path | str, *, host: str = DEFAULT_HOST, days: int = 2,
     return meta
 
 
-def _check(leaf, ca, host: str, days: int) -> list[str]:
+def _check(leaf, ca, hosts: list[str], days: int) -> list[str]:
     problems: list[str] = []
     san = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     dns = list(san.get_values_for_type(x509.DNSName))
-    if dns != [host]:
-        problems.append(f"SAN 必须只有 {host}，实际 {dns}")
+    if sorted(set(dns)) != sorted(set(hosts)):
+        problems.append(f"SAN 必须正好是 {hosts}，实际 {dns}")
+    try:
+        nc = ca.extensions.get_extension_for_class(x509.NameConstraints).value
+        permitted = {str(d.value) for d in (nc.permitted_subtrees or [])}
+        missing = [h for h in hosts if h not in permitted]
+        if missing:
+            problems.append(f"CA NameConstraints 未覆盖: {missing}")
+    except x509.ExtensionNotFound:
+        problems.append("CA 缺少 NameConstraints")
     left = (leaf.not_valid_after_utc - datetime.now(timezone.utc)).total_seconds()
     if left <= 0:
         problems.append("证书已过期")
@@ -218,32 +243,38 @@ def remaining_hours(cert_dir: Path | str) -> float | None:
         return None
 
 
-def ensure(cert_dir: Path | str, *, host: str = DEFAULT_HOST, days: int = 2,
+def ensure(cert_dir: Path | str, *, host: str | None = None,
+           hosts: list[str] | tuple[str, ...] | None = None, days: int = 2,
            crl_port: int = DEFAULT_CRL_PORT, min_remaining_hours: float = 6.0) -> dict:
     """证书可用则复用，否则重签（重签后**必须重新装信任**，CA 变了）。"""
+    names = _normalize_hosts(host, hosts)
     meta = load_meta(cert_dir)
     left = remaining_hours(cert_dir)
     if meta and left is not None and left > min_remaining_hours \
-            and meta.get("host") == host and meta.get("self_check") == "OK" \
+            and list(meta.get("san_dns") or []) == names \
+            and meta.get("self_check") == "OK" \
             and (Path(cert_dir) / "server.key").exists():
         meta["reused"] = True
         meta["remaining_hours"] = round(left, 1)
         return meta
-    meta = generate(cert_dir, host=host, days=days, crl_port=crl_port)
+    meta = generate(cert_dir, hosts=names, days=days, crl_port=crl_port)
     meta["reused"] = False
     meta["remaining_hours"] = round(remaining_hours(cert_dir) or 0.0, 1)
     return meta
 
 
-def preflight(cert_dir: Path | str, *, host: str = DEFAULT_HOST) -> list[str]:
-    """起服务前的自检（返回问题列表，空 = OK）。"""
+def preflight(cert_dir: Path | str, *, host: str | None = None,
+              hosts: list[str] | tuple[str, ...] | None = None) -> list[str]:
+    """起服务前的自检（返回问题列表，空 = OK）。默认要求证书覆盖 `host`（或 `hosts`）。"""
+    names = _normalize_hosts(host, hosts)
     out = Path(cert_dir)
     problems: list[str] = []
     meta = load_meta(out)
     if not meta:
         return [f"缺少 session.json: {out}（先跑 mockctl cert-gen）"]
-    if meta.get("san_dns") != [host]:
-        problems.append(f"证书 SAN 不是单一目标域名: {meta.get('san_dns')!r}")
+    san_dns = list(meta.get("san_dns") or [])
+    if not set(names).issubset(set(san_dns)):
+        problems.append(f"证书 SAN {san_dns!r} 未覆盖目标 {names!r}")
     if meta.get("mode") != "ca":
         problems.append(f"证书模式是 {meta.get('mode')!r}：必须是 ca（叶子模式无 CRL，客户端握手前断开）")
     if meta.get("self_check") != "OK":
