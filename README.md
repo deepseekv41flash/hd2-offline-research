@@ -12,6 +12,7 @@
 >
 > 交接来源：`D:\mod\work\hd2-proxy-toolkit\docs\HANDOFF-OFFLINE-PRIVATE-SERVER-2026-11-20.md` §9 runbook。
 > 本轮结论文档：[docs/OFFLINE-PRIVATE-SERVER-RESEARCH-2026-11-21.md](docs/OFFLINE-PRIVATE-SERVER-RESEARCH-2026-11-21.md)。
+> **阶段1 定稿摘要（一页看完）**：[docs/STAGE1-FINAL-2026-11-21.md](docs/STAGE1-FINAL-2026-11-21.md)
 >
 > **发布状态：研究线，暂不发 Release、不打包产品**——等线 A 有实机结论、线 B 方案稳定后，再另立产品化仓/版本线。
 
@@ -66,7 +67,7 @@ tools/      抓包分析 / 样本构建 / 回放验证 / 控制台
   t7b_probe.py        T7b 整局验收探针（PlayFab/Sony 黑洞下打一局，自动判定进图/结算并复原代理）
 tests/      pytest 77 项（含真实抓包矩阵、TLS 端到端、脱敏门禁、B9 schema 采集/对照、TCP 转发）
 profiles/   offline-mock.json（与产品 profile 无关的独立配置）
-docs/       结项档 + A2 主机依赖侦察 + B2/B3 大厅/登录侦察 + T4 运行时出网清单 + T4b 无 PSN 对照 + B9 登录体 schema
+docs/       阶段1 定稿摘要(STAGE1-FINAL) + 结项档 + A2 主机依赖 + B2/B3 大厅/登录 + T4 出网清单 + T4b 无 PSN + B9 登录体 schema + T6 MITM 取证 + T7 必要性差分
 ```
 
 ## 5 分钟跑起来（不需要游戏、不需要管理员）
