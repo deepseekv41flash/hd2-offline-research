@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory = $true)][string]$ServerIp,
   [string]$Domain = 'api.live.prod.thehelldiversgame.com',
   [switch]$DryRun

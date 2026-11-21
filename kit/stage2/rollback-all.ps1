@@ -1,4 +1,4 @@
-param([switch]$DryRun)
+﻿param([switch]$DryRun)
 # 一键回滚：hosts 标记行 + 当前用户代理 + 测试证书
 . "$PSScriptRoot\lib.ps1"
 Write-Step '一键回滚（hosts / 用户代理 / 测试证书）'

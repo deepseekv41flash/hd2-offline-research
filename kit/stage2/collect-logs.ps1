@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$OutDir = "$env:USERPROFILE\Desktop\hd2-stage2-logs",
   [switch]$DryRun
 )

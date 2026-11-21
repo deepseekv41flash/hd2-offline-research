@@ -1,4 +1,4 @@
-# HD2 阶段2 测试包：公共函数（hosts 备份/还原、证书、代理、TCP 探测）
+﻿# HD2 阶段2 测试包：公共函数（hosts 备份/还原、证书、代理、TCP 探测）
 $ErrorActionPreference = 'Stop'
 $script:Root = $PSScriptRoot
 $script:BackupDir = Join-Path $Root 'backup'

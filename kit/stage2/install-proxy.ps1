@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory = $true)][string]$ProxyHost,
   [int]$ProxyPort = 18080,
   [switch]$DryRun
