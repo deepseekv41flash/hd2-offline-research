@@ -1,0 +1,71 @@
+{
+  "buildGameHash": "7256716030c211b1",
+  "completedObjectives": 0,
+  "connectionString": "cv2:f20de3e9-d48a-45e2-be47-241fb1690249.r-20260323|619689|kv1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "crossplayMode": 0,
+  "difficulty": 0,
+  "gameModeProgress": 0,
+  "hostability": 0,
+  "inLoadout": false,
+  "lobbyId": "f20de3e9-d48a-45e2-be47-241fb1690249.r-20260323",
+  "numLobbyMembers": 2,
+  "numSessionMembers": 0,
+  "onboardingState": 0,
+  "operationProgress": 0,
+  "operationSeed": 0,
+  "operationType": 0,
+  "planetId": -1,
+  "planetType": 0,
+  "players": [
+    {
+      "commendRank": 0,
+      "experience": 5090837,
+      "hasInfo": true,
+      "isHost": true,
+      "memberAccountId": "22318649750694466001",
+      "playerName": "PLAYER-1",
+      "playerRank": 237,
+      "sourcePlatform": 1
+    },
+    {
+      "commendRank": 0,
+      "experience": 2759938,
+      "hasInfo": true,
+      "isHost": false,
+      "memberAccountId": "22318649750694466002",
+      "playerName": "PLAYER-2",
+      "playerRank": 199,
+      "sourcePlatform": 1
+    },
+    {
+      "commendRank": 0,
+      "experience": 0,
+      "hasInfo": false,
+      "isHost": false,
+      "memberAccountId": "0",
+      "playerName": "",
+      "playerRank": 0,
+      "sourcePlatform": 5
+    },
+    {
+      "commendRank": 0,
+      "experience": 0,
+      "hasInfo": false,
+      "isHost": false,
+      "memberAccountId": "0",
+      "playerName": "",
+      "playerRank": 0,
+      "sourcePlatform": 5
+    }
+  ],
+  "preferenceGroup": 0,
+  "privacyMode": 1,
+  "race": 0,
+  "regionIndex": -1,
+  "sosBeacons": 0,
+  "startTime": 0,
+  "state": 1,
+  "territoryId": -1,
+  "transitionTarget": 0,
+  "warId": -1
+}

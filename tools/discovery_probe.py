@@ -171,10 +171,13 @@ def run(base: str, *, insecure: bool = False, host_header: str = "") -> int:
     check("A 看到 B 入厅", code == 200 and acc_b in members, f"members={members}")
     check("重复加入没有产生重复成员", members.count(acc_b) == 1, f"count={members.count(acc_b)}")
 
-    print("== 6. A 清理大厅，B 再查应为空 ==")
+    print("== 6. A 清理大厅，B 再查应为终态 ==")
     a.call("DELETE", "/api/lobby/clear")
     code, doc, src = b.call("GET", f"/api/lobby/{LOBBY_ID}")
-    check("清理后大厅不可见", code == 200 and (not doc or not doc.get("lobbyId")), f"doc={str(doc)[:60]} src={src}")
+    # B8 定论（2026-11-21）：未知/已关闭大厅回 HTTP 404 让客户端**立即停止轮询**；
+    # 200 关闭态会让它每 15 s 无限重试。两种都算「不可见」，404 是当前部署策略。
+    gone = code == 404 or (code == 200 and (not doc or not doc.get("lobbyId")))
+    check("清理后大厅不可见", gone, f"code={code} doc={str(doc)[:60]} src={src}")
 
     print()
     if failures:

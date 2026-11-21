@@ -42,6 +42,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from mock.capture import CaptureStore  # noqa: E402
+from mock.discovery import SERVER_DEFAULT_NUMBERS  # noqa: E402
 from mock.handler import MockHandler  # noqa: E402
 
 ACCOUNT_PREFIX = "76561190"          # 探针账号前缀（20 位纯数字，与真实同形）
@@ -232,7 +233,8 @@ def run_checks(transport, *, unknown_policy: str = "empty") -> list[dict]:
         st, body, src = ctx.req("GET", "/api/lobby/accounts", account=ctx.c)
         doc = _json_body(body) or {}
         mine = [x for x in (doc.get("accountLobbies") or []) if x.get("account") == ctx.c]
-        ok = st == 200 and all(x.get("lobbyId") == "" for x in mine)
+        # 真实契约：不在厅里的 id 条目**完全没有 lobbyId 键**（不是空字符串）
+        ok = st == 200 and all("lobbyId" not in x for x in mine)
         add("C02 新账号无厅", ok, f"status={st} accountLobbies={doc.get('accountLobbies')}")
 
         # C03 A 建房 → B 可见
@@ -312,6 +314,47 @@ def run_checks(transport, *, unknown_policy: str = "empty") -> list[dict]:
         ok = index_ids.issubset(lobby_ids)
         add("C11 accountLobbies 索引一致", ok,
             f"index={sorted(index_ids)} lobbies={sorted(lobby_ids)}")
+
+        # C12 `accountLobbies` 按请求 ids **同序等长回显**；不在厅里的条目没有 lobbyId 键
+        unknown_id = "19999999999999999999"
+        st_i, body_i, _ = ctx.req("POST", "/api/lobby/accounts",
+                                  json.dumps({"ids": [REAL_JOIN_ID, unknown_id]}).encode(),
+                                  account=ctx.b)
+        doc_i = _json_body(body_i) or {}
+        entries = doc_i.get("accountLobbies") or []
+        echoed = [x.get("account") for x in entries]
+        first = entries[0] if entries else {}
+        second = entries[1] if len(entries) > 1 else {}
+        ok = (st_i == 200 and echoed == [REAL_JOIN_ID, unknown_id]
+              and first.get("lobbyId") == ctx.lobby_b and "lobbyId" not in second)
+        add("C12 ids 同序回显", ok,
+            f"status={st_i} 回显={echoed} 首条厅={first.get('lobbyId')}")
+
+        # C13 厅 body 满足真实解析器要求：20 个必需数字字段齐全、players 定长槽、人数真实
+        lobbies_i = doc_i.get("lobbies") or []
+        lob = lobbies_i[0] if lobbies_i else {}
+        missing = [n for n in SERVER_DEFAULT_NUMBERS if n not in lob]
+        ok = bool(lob) and not missing and "memberAccountIds" not in lob \
+            and len(lob.get("players") or []) == 4 and lob.get("numLobbyMembers") == 1
+        add("C13 厅 body 真实形状", ok,
+            f"缺字段={missing} 槽数={len(lob.get('players') or [])} 人数={lob.get('numLobbyMembers')}")
+
+        # C14 加入门槛：Login 自报的公钥能按**真实 accountId** 取回（缺它加入方永不被接纳）
+        public_key = "conf-public-key-0123456789abcdefghijkl"
+        ctx.req("POST", "/api/Account/Login",
+                json.dumps({"instanceId": "conf-keys", "publicKey": public_key}).encode(),
+                account=ctx.c)
+        real_c = "22318649750694466996"
+        ctx.req("PUT", "/api/lobby",
+                _lobby_body(f"{uuid.uuid4()}.r-{uuid.uuid4().hex[:8]}", real_c, "CONF-KEYS"),
+                account=ctx.c)
+        st_k, body_k, src_k = ctx.req("GET", f"/api/Account/Keys?id={real_c}", account=ctx.a)
+        keys = (_json_body(body_k) or {}).get("accountKeys") or []
+        ok = (st_k == 200 and len(keys) == 1
+              and keys[0].get("platformAccountId") == real_c
+              and keys[0].get("key") == public_key)
+        add("C14 公钥按 accountId 可取", ok,
+            f"status={st_k} source={src_k} keys={keys}")
     finally:
         for acc in (ctx.a, ctx.b, ctx.c):
             try:

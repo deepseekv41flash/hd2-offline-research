@@ -115,6 +115,9 @@ class DiscoveryLobby:
             info["last_seen"] = self._now()
             if instance_id:
                 info["instance_id"] = instance_id
+            key = _public_key(body)
+            if key:
+                info["public_key"] = key
             if client_addr:
                 self._by_ip[client_addr] = account
         return {"sessionId": str(uuid.uuid4())}
@@ -289,19 +292,95 @@ class DiscoveryLobby:
             self._save_locked()
             return copy.deepcopy(lobby)
 
-    def accounts(self, account: str = "") -> dict:
-        """`GET /api/lobby/accounts` 的响应：活跃大厅 + 账号→大厅索引。"""
+    def accounts(self, account: str = "", ids: Any = None) -> dict:
+        """`GET|POST /api/lobby/accounts`：账号→大厅索引 + 厅 body 列表（好友「可加入」的唯一来源）。
+
+        真实契约（2026-11-21 23:52–00:10 全通基线抓包，13 份响应 13/13 验证；解析器偏移见下）：
+          * 请求体 `{"ids":[<accountId>,…]}`；`accountLobbies` **严格按请求顺序、等长回显**（112 id → 112 条）；
+          * 在厅里的 id 带 `lobbyId` 键，不在厅里的**完全没有该键**（不是空字符串）；
+          * `lobbies` = 被引用的厅去重后的 body（9 个 id 有厅 → 8 个不同厅），
+            内容 = 客户端 `PUT /api/lobby` 上传的字段 + `lobbyId` / `connectionString`；
+          * 客户端拿去渲染好友状态（`On Ship` / 可加入），点加入时把 `connectionString` 交给
+            PlayFab `Lobby/JoinLobby`（时序已证：厅在 accounts 里出现 1m50s 后才 JoinLobby，
+            且 PlayFab 侧此前从未见过该 connectionString）。
+        客户端解析器：`0x1055b50`（响应）/ `0x1053f60`（厅对象）——见 HellForge 逆向记录。
+        """
+        requested = requested_account_ids(ids)
         with self._lock:
             self._expire_locked()
+            index = self._account_lobby_index_locked()
             account_lobbies: list[dict] = []
-            lobbies: list[dict] = []
-            for entry in self._lobbies.values():
-                lobbies.append(copy.deepcopy(entry["body"]))
-                account_lobbies.append({"account": entry["owner"],
-                                        "lobbyId": entry["body"].get("lobbyId", "")})
-            if account and not any(a["account"] == account for a in account_lobbies):
-                account_lobbies.append({"account": account, "lobbyId": ""})
+            used: list[str] = []
+            if requested:
+                for ident in requested:                     # 逐 id 一条，顺序与请求一致
+                    lobby_id = index.get(ident)
+                    if lobby_id:
+                        account_lobbies.append({"account": ident, "lobbyId": lobby_id})
+                        if lobby_id not in used:
+                            used.append(lobby_id)
+                    else:
+                        account_lobbies.append({"account": ident})
+            else:
+                # 兼容：没有 ids（纯 GET / 早期探针）→ 全部活跃厅 + owner/成员索引
+                for lobby_id, entry in self._lobbies.items():
+                    used.append(lobby_id)
+                    identities = [entry["owner"]]
+                    info = self._accounts.get(entry["owner"]) or {}
+                    real = str(info.get("real_id") or "")
+                    if real:
+                        identities.append(real)
+                    identities.extend(_member_ids(entry["body"]))
+                    for ident in identities:
+                        if ident and not any(a["account"] == ident for a in account_lobbies):
+                            account_lobbies.append({"account": ident, "lobbyId": lobby_id})
+                if account and not any(a["account"] == account for a in account_lobbies):
+                    account_lobbies.append({"account": account})
+            lobbies = [self._lobby_view_locked(lid) for lid in used if lid in self._lobbies]
             return {"accountLobbies": account_lobbies, "lobbies": lobbies}
+
+    def account_keys(self, ids: list[str]) -> dict:
+        """`GET /api/Account/Keys?id=<accountId>[,<id>…]`：返回这些账号的公钥。
+
+        **这是加入的真正门槛**（E2 卡住的根因，2026-11-22 定位）：一台游戏只有在
+        `GET /Account/Keys?id=<对端 accountId>` 拿到对端公钥、且与本机游戏连接上看到的一致时，
+        才会接纳该玩家；拿不到就**永远不接纳**，现场表现是加载卡住 / lobby timeout。
+        公钥来源：每个客户端在 `POST /Account/Login` 的 `publicKey` 字段自报（见 `_public_key`），
+        服务端只存原样、不解释（1..256 个可打印 ASCII 字符，不是十六进制）。
+        查不到的 id 直接不出现在数组里（真实后端行为：空数组 ⇒ 不接纳）。
+        """
+        out: list[dict] = []
+        with self._lock:
+            self._expire_locked()
+            for ident in ids:
+                key = self._public_key_locked(ident)
+                if key:
+                    out.append({"platformAccountId": ident, "key": key})
+            return {"accountKeys": out}
+
+    def _public_key_locked(self, ident: str) -> str:
+        """按真实 accountId（或内部账号令牌）找公钥。"""
+        if not ident:
+            return ""
+        for token, info in self._accounts.items():
+            if token == ident or str(info.get("real_id") or "") == ident:
+                return str(info.get("public_key") or "")
+        return ""
+
+    def _account_lobby_index_locked(self) -> dict[str, str]:
+        """accountId → lobbyId 索引：owner 的内部/真实身份 + 厅内所有成员的真实 ID。"""
+        index: dict[str, str] = {}
+        for lobby_id, entry in self._lobbies.items():
+            info = self._accounts.get(entry["owner"]) or {}
+            for ident in (entry["owner"], str(info.get("real_id") or "")):
+                if ident:
+                    index.setdefault(ident, lobby_id)
+            for mid in _member_ids(entry["body"]):
+                index.setdefault(mid, lobby_id)
+        return index
+
+    def _lobby_view_locked(self, lobby_id: str) -> dict:
+        entry = self._lobbies.get(lobby_id) or {}
+        return _lobby_view(entry.get("body") or {}, max_members=self._max_members)
 
     def clear(self, account: str) -> None:
         """离开/清理：删掉本账号建的大厅，并从别的大厅成员里移除本账号（幂等）。"""
@@ -421,6 +500,7 @@ class DiscoveryLobby:
             "accounts": {
                 a: {"ip": i.get("ip", ""), "instance_id": i.get("instance_id", ""),
                     "real_id": i.get("real_id"), "profile": i.get("profile"),
+                    "public_key": i.get("public_key"),
                     "lobby_id": i.get("lobby_id"), "age": age(i.get("last_seen", now))}
                 for a, i in self._accounts.items()
             },
@@ -471,6 +551,7 @@ class DiscoveryLobby:
                 self._accounts[acc] = {
                     "ip": info.get("ip", ""), "instance_id": info.get("instance_id", ""),
                     "real_id": info.get("real_id"), "profile": info.get("profile"),
+                    "public_key": info.get("public_key"),
                     "lobby_id": info.get("lobby_id"),
                     "last_seen": now - float(info.get("age") or 0.0)}
                 if info.get("ip"):
@@ -639,3 +720,91 @@ def _normalize_members(lobby: dict, owner: str) -> None:
         if mid not in ids:
             ids.append(mid)
     lobby["memberAccountIds"] = ids
+
+
+# ---------------------------------------------------------------- 真实契约辅助
+# 大厅对象解析器（game.dll 0x1053f60）**必需**的 20 个数字字段：缺一个整份 `/lobby/accounts`
+# 响应就解析失败，现场表现是好友全部变灰（HellForge 逆向记录，2026-11-22 引入）。
+# 客户端自己上传的 body 缺其中几个（numSessionMembers / completedObjectives / planetType /
+# transitionTarget 等），缺的补中性值 0。
+REQUIRED_LOBBY_NUMBERS = (
+    "completedObjectives", "crossplayMode", "difficulty", "gameModeProgress", "hostability",
+    "onboardingState", "operationProgress", "operationSeed", "operationType", "planetId",
+    "planetType", "preferenceGroup", "privacyMode", "race", "regionIndex", "sosBeacons",
+    "startTime", "state", "territoryId", "transitionTarget",
+)
+# 除解析器必需项外，真实后端还会补一个 `numSessionMembers`（客户端上传里没有），
+# 2026-11-21 抓到的真实「在飞船里的好友厅」body 里它是 0。
+SERVER_DEFAULT_NUMBERS = REQUIRED_LOBBY_NUMBERS + ("numSessionMembers",)
+
+
+def _public_key(body: Any) -> str:
+    """从 `POST /Account/Login` 的 body 里取本机公钥（字段名 `publicKey`）。
+
+    形状：1..256 个可打印 ASCII 字符（引擎把 32 字节 key 编码进 64 字节缓冲，**不是**十六进制），
+    按原样保存、原样下发；不解释、不转换。
+    """
+    if not isinstance(body, dict):
+        return ""
+    for name in ("publicKey", "PublicKey", "public_key"):
+        text = body.get(name)
+        if isinstance(text, str) and 0 < len(text) <= 256 and all(" " < c <= "~" for c in text):
+            return text
+    return ""
+
+
+def requested_account_ids(payload: Any) -> list[str]:
+    """从 `{"ids":[…]}` 请求体里取账号 id 列表（键名大小写不敏感、保序、丢空串）。
+
+    `POST /lobby/accounts` 的**全部**语义就是这个列表：真实后端逐 id 回显一条 `accountLobbies`。
+    """
+    items: Any = None
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if str(key).lower() == "ids":
+                items = value
+                break
+    elif isinstance(payload, (list, tuple)):
+        items = payload
+    if not isinstance(items, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in items:
+        ident = str(item or "").strip()
+        if ident:
+            out.append(ident)
+    return out
+
+
+def _placeholder_player() -> dict:
+    """空槽占位对象：真实响应里 `players` 固定 maxMembers 个槽，空槽就是这个形状。"""
+    return {"commendRank": 0, "experience": 0, "hasInfo": False, "isHost": False,
+            "memberAccountId": "0", "playerName": "", "playerRank": 0, "sourcePlatform": 5}
+
+
+def _lobby_view(body: dict, *, max_members: int = DEFAULT_MAX_MEMBERS) -> dict:
+    """把客户端上传的厅 body 变成 `lobbies[]` 里的形状（真实后端只做这几件事）。
+
+    对照 2026-11-21 抓到的真实样本（含自己在内、`state=1` 在飞船的好友厅）：
+      * 丢 `memberAccountIds`（服务端内部索引，不下发）；
+      * 补全 20 个必需数字字段（缺 → 0）；
+      * `players` 补齐到 maxMembers 槽（空槽 = 占位对象），每人补 `playerRank`/`commendRank`；
+      * `numLobbyMembers` = **真实成员数**（不是槽位数）；
+      * `seed` / `operationMissionStates` 在飞船内是**缺席**的（不是空串/null），保持缺席。
+    """
+    out = copy.deepcopy(body) if isinstance(body, dict) else {}
+    out.pop("memberAccountIds", None)
+    for name in SERVER_DEFAULT_NUMBERS:
+        if out.get(name) is None:
+            out[name] = 0
+    players = out.get("players")
+    slots = [dict(p) for p in players if isinstance(p, dict)] if isinstance(players, list) else []
+    for slot in slots:
+        slot.setdefault("playerRank", 0)
+        slot.setdefault("commendRank", 0)
+    while len(slots) < max_members:
+        slots.append(_placeholder_player())
+    out["players"] = slots
+    out["numLobbyMembers"] = sum(
+        1 for p in slots if _looks_like_account(str(p.get("memberAccountId") or "")))
+    return out

@@ -101,6 +101,8 @@ class ReplayIndex:
 # ---- 有状态端点路由表（handler 用；与回放索引是两套） -------------------------
 STATE_ROUTES: list[tuple[str, re.Pattern, str]] = [
     ("POST", re.compile(r"^/api/Account/Login$"), "account_login"),
+    # 加入门槛：客户端加入前会取对端的公钥，拿不到就永远不接纳该玩家（2026-11-22 定论）。
+    ("GET", re.compile(r"^/api/Account/Keys$"), "account_keys"),
     ("POST", re.compile(r"^/api/Account/ReportPosition$"), "report_position"),
     ("GET", re.compile(r"^/api/Operation$"), "operation_list"),
     ("POST", re.compile(r"^/api/Operation/Create$"), "operation_create"),

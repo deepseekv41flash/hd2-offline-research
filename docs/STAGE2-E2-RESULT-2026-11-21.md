@@ -80,3 +80,22 @@
 1. **好友路径仍走官方 API 公告 + PlayFab JoinLobby**，失败点更可能是
    「Steam 好友未同步成 PlayFab entity 好友 → Friends-only 大厅 JoinLobby 被拒」或游戏层握手；
 2. 公开匹配路径（FindLobbies + 星球过滤）本次不作为好友失败的归因。
+
+## 8 根因定论（2026-11-22 凌晨，真实成功链路对照后）
+
+> 详见 `docs/STAGE2-REAL-JOIN-FLOW-2026-11-22.md`。§4 / §7 的卡点排序作废，**真实根因已定位**。
+
+**根因 = 缺 `GET /api/Account/Keys` 公钥交换，加入方永远不被接纳。**
+
+- 每台游戏在 `POST /Account/Login` 的 `publicKey` 自报公钥；对端用
+  `GET /Account/Keys?id=<accountId>` 取它，**拿不到就不接纳**（现场表现：卡在加载 / lobby timeout）。
+- E2 现场我们的 mock 收到 5 次该请求，全部落到 `[fallback]` 回 `{}`
+  （`state/evidence/e2prep/e2-mock-watch.log` 21:46 / 21:58 / 22:08 / 22:25 / 22:47），**两个方向都有**。
+- 已在 2026-11-22 00:20 修好并部署 A 机：`login` 采集 `publicKey`、新增 `/api/Account/Keys`
+  按真实 accountId 返回、`/api/lobby/accounts` 按 `ids` 同序回显、厅 body 补齐 21 个默认字段并
+  固定 4 槽 players。一致性套件 14/14、`pytest` 153 passed、A 机 healthcheck PASS。
+- **同时否证**两条旧猜测：`state=1` 是合法的「在飞船」值（真实样本就是这样）；
+  官方 API 侧 `PUT /api/lobby`、`GET /api/lobby/<id>`、`POST .../member` 在真实成功链路里
+  **完全没有被调用**（它们只在 mock 当权威时才出现），其响应形状不需要复刻。
+
+剩余未证：PlayFab Party 的 4104/4379、以及本次修复后双机是否能真正入舱 —— 需要 E3 复测。

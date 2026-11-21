@@ -60,6 +60,23 @@ def _account_hint(headers: dict) -> str:
         return ""
 
 
+def _query_ids(query: str) -> list[str]:
+    """从 query 串里取 `id=<accountId>`（支持重复 `&id=` 与逗号分隔 `id=a,b`，保序去空）。
+
+    `GET /api/Account/Keys` 用它点名要哪些账号的公钥；真实客户端一次只要一个。
+    """
+    out: list[str] = []
+    for pair in (query or "").split("&"):
+        key, _, value = pair.partition("=")
+        if key.strip().lower() != "id":
+            continue
+        for item in value.split(","):
+            ident = item.strip()
+            if ident and ident not in out:
+                out.append(ident)
+    return out
+
+
 def _deep_merge(base: dict, patch: dict) -> dict:
     out = copy.deepcopy(base)
     for k, v in (patch or {}).items():
@@ -217,9 +234,20 @@ class MockHandler:
         try:
             if name == "account_login":
                 if self.discovery is not None:
-                    return self._json(self.discovery.login(client_addr=client_addr, body=payload),
+                    # account_hint 必须透传：否则带 X-HD2-Account 的探针会登录到**另一个**账号，
+                    # 公钥就挂错人（2026-11-22 C14 抓到：login 建出 ...0001，PUT 落在 ...0003）
+                    return self._json(self.discovery.login(client_addr=client_addr, body=payload,
+                                                           account_hint=_account_hint(headers)),
                                       source="discovery:account_login")
                 return self._json(st.login(), source=src)
+            if name == "account_keys":
+                # ?id=<accountId>[&id=…] 或 ?id=a,b —— 真实后端按 id 逐个回公钥，查不到的省略
+                ids = _query_ids(query)
+                if self.discovery is not None:
+                    return self._json(self.discovery.account_keys(ids),
+                                      source="discovery:account_keys"
+                                      + ("" if ids else ":no-id"))
+                return self._json({"accountKeys": []}, source=src + ":empty")
             if name == "report_position":
                 return self._json({}, source=src)
             if name == "operation_list":
@@ -254,7 +282,9 @@ class MockHandler:
                                       source="discovery:lobby_put"
                                       + (":conflict" if saved is None else ""))
                 if name == "lobby_accounts":
-                    return self._json(disc.accounts(account), source="discovery:lobby_accounts")
+                    # 请求体 {"ids":[…]} 决定回显内容：真实后端逐 id 回一条 accountLobbies
+                    return self._json(disc.accounts(account, ids=payload),
+                                      source="discovery:lobby_accounts")
                 if name == "lobby_clear":
                     disc.clear(account)
                     return self._json({}, source="discovery:lobby_clear")

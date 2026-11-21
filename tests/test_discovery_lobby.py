@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from mock.capture import CaptureStore
+from mock import discovery
 from mock.discovery import DiscoveryLobby
 from mock.handler import MockHandler
 
@@ -142,7 +143,8 @@ def test_expired_lobby_disappears_from_accounts():
     clock.advance(31)
     view = svc.accounts(acc_b)
     assert view["lobbies"] == []
-    assert all(item["lobbyId"] == "" for item in view["accountLobbies"])
+    # 真实契约：不在厅里的条目没有 lobbyId 键（不是空串）
+    assert all("lobbyId" not in item for item in view["accountLobbies"])
 
 
 # ---------------------------------------------------------------- 冲突/清理
@@ -301,3 +303,110 @@ def test_owner_reput_does_not_wipe_joined_members():
     ids = [p["memberAccountId"] for p in got["players"] if p.get("memberAccountId")]
     assert acc_join in ids, f"owner 重发 PUT 抹掉了成员: {ids}"
     assert got["numLobbyMembers"] == 2
+
+
+# ---------------------------------------------------------------- 真实契约（2026-11-22 抓包）
+FIXTURES = Path(__file__).parent / "fixtures"
+# 真实服务端在客户端上传体之外**补**的 6 个字段（其余必需数字字段客户端自己会上传）
+SERVER_ADDED_LOBBY_FIELDS = {"completedObjectives", "numSessionMembers", "operationSeed",
+                             "operationType", "planetType", "transitionTarget"}
+
+
+def _golden_lobby() -> dict:
+    """2026-11-21 全通基线抓到的真实「在飞船里的好友厅」（已脱敏，见 fixtures 注释）。"""
+    return json.loads((FIXTURES / "real_lobby_in_ship.json").read_text(encoding="utf-8"))
+
+
+def test_lobby_view_reproduces_real_official_body():
+    """真实后端只做这几件事：补 6 个字段 + 丢 memberAccountIds + 补人数。逐字段对照真身。"""
+    golden = _golden_lobby()
+    upload = {k: v for k, v in golden.items() if k not in SERVER_ADDED_LOBBY_FIELDS}
+    upload["memberAccountIds"] = ["22318649750694466001", "22318649750694466002"]
+    view = discovery._lobby_view(upload, max_members=4)
+    assert view == golden
+
+
+def test_lobby_view_fills_required_numbers_and_pads_players():
+    """缺任一必需数字字段会让整份 /lobby/accounts 解析失败（好友全灰）；players 固定 maxMembers 槽。"""
+    view = discovery._lobby_view({"lobbyId": LOBBY_ID})
+    for name in discovery.REQUIRED_LOBBY_NUMBERS:
+        assert name in view, name
+        assert view[name] == 0, name
+    assert "memberAccountIds" not in view
+    assert len(view["players"]) == 4
+    assert view["numLobbyMembers"] == 0
+    assert all(p["memberAccountId"] == "0" and p["hasInfo"] is False for p in view["players"])
+
+
+def test_accounts_echoes_requested_ids_in_order():
+    """`accountLobbies` 严格按请求 ids 顺序等长回显；不在厅里的条目没有 lobbyId 键。"""
+    svc, _ = _service()
+    acc_host = svc.account_for(client_addr="10.0.0.1")
+    svc.put(acc_host, _host_lobby(REAL_HOST_ID, "Fanna_"))
+    unknown = "19999999999999999999"
+
+    view = svc.accounts(acc_host, ids={"ids": [REAL_HOST_ID, unknown]})
+    assert [e["account"] for e in view["accountLobbies"]] == [REAL_HOST_ID, unknown]
+    assert view["accountLobbies"][0] == {"account": REAL_HOST_ID, "lobbyId": LOBBY_ID}
+    assert view["accountLobbies"][1] == {"account": unknown}      # 没有 lobbyId 键
+    assert [l["lobbyId"] for l in view["lobbies"]] == [LOBBY_ID]
+
+
+def test_accounts_maps_joined_member_and_dedups_bodies():
+    """加入方按**真实 accountId** 出现在映射里；两个 id 指向同一厅时 body 只回一份。"""
+    svc, _ = _service()
+    acc_host = svc.account_for(client_addr="10.0.0.1")
+    acc_join = svc.account_for(client_addr="10.0.0.2")
+    svc.put(acc_host, _host_lobby(REAL_HOST_ID, "Fanna_"))
+    svc.put(acc_join, _lobby(lobbyId="22222222-3333-4444-8555-666666666666.r-00000002",
+                            players=[{"slot": 0, "memberAccountId": REAL_JOINER_ID,
+                                      "isHost": True, "hasInfo": True, "playerName": "J"}],
+                            numLobbyMembers=1))
+    svc.join(acc_join, LOBBY_ID, None)
+
+    view = svc.accounts(acc_host, ids={"ids": [REAL_HOST_ID, REAL_JOINER_ID]})
+    assert [e.get("lobbyId") for e in view["accountLobbies"]] == [LOBBY_ID, LOBBY_ID]
+    assert len(view["lobbies"]) == 1                              # 去重
+    assert view["lobbies"][0]["numLobbyMembers"] == 2             # 真实成员数
+    assert "memberAccountIds" not in view["lobbies"][0]
+
+
+def test_login_public_key_is_served_by_account_keys():
+    """加入门槛：每台游戏在 Login 自报公钥，`/Account/Keys` 按真实 accountId 回它。"""
+    svc, _ = _service()
+    key = "Q2hhbmdlTWUxMjM0NTY3ODkwYWJjZGVmZ2hpamts"          # 44 个可打印字符，非十六进制
+    svc.login(client_addr="10.0.0.1", body={"instanceId": "A", "publicKey": key})
+    acc_host = svc.account_for(client_addr="10.0.0.1")
+    svc.put(acc_host, _host_lobby(REAL_HOST_ID, "Fanna_"))        # 学会真实 accountId
+
+    assert svc.account_keys([REAL_HOST_ID]) == {
+        "accountKeys": [{"platformAccountId": REAL_HOST_ID, "key": key}]}
+    assert svc.account_keys(["19999999999999999999"]) == {"accountKeys": []}
+    assert svc.account_keys([acc_host])["accountKeys"][0]["key"] == key
+
+
+def test_login_ignores_unprintable_public_key():
+    svc, _ = _service()
+    svc.login(client_addr="10.0.0.1", body={"publicKey": "bad key\n"})
+    acc = svc.account_for(client_addr="10.0.0.1")
+    assert svc.account_keys([acc]) == {"accountKeys": []}
+
+
+def test_handler_login_honours_account_header(synthetic_capture: Path):
+    """带 `X-HD2-Account` 的登录必须落在**同一个**账号上。
+
+    2026-11-22 修：`account_login` 分支原来没把账号头传进 `login()`，探针登录会建出另一个账号，
+    公钥挂错人 → 对端 `/Account/Keys` 拿不到 → 加入方永不被接纳。真实客户端走 IP 归属，
+    但两台机器经同一中继/同 NAT 时必须靠显式账号头区分。
+    """
+    h = _handler(synthetic_capture)
+    header = {"x-hd2-account": "76561190000000000042"}
+    key = "probe-key-0123456789abcdefghijklmnop"
+    r = h.handle("POST", "/api/Account/Login",
+                 json.dumps({"instanceId": "P", "publicKey": key}).encode(),
+                 headers=header, client_addr="10.0.0.9")
+    assert r.source == "discovery:account_login"
+    acc = h.discovery.account_for(account_hint=header["x-hd2-account"])
+    assert acc == header["x-hd2-account"]
+    served = h.discovery.account_keys([header["x-hd2-account"]])
+    assert served["accountKeys"] == [{"platformAccountId": header["x-hd2-account"], "key": key}]
