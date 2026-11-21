@@ -63,6 +63,7 @@ tools/      抓包分析 / 样本构建 / 回放验证 / 控制台
   mitm_proxy.py       T6a 旁路取证 MITM（CONNECT 代理 + 选择性 TLS 终止 + 只记 schema）
   analyze_mitm.py     T6a 分析：哪些域名可 MITM / 实际请求 / 响应 schema
   t7_probe.py         T7 必要性差分探针（blackhole / fake-200 逐组断开，自动判定是否阻断）
+  t7b_probe.py        T7b 整局验收探针（PlayFab/Sony 黑洞下打一局，自动判定进图/结算并复原代理）
 tests/      pytest 77 项（含真实抓包矩阵、TLS 端到端、脱敏门禁、B9 schema 采集/对照、TCP 转发）
 profiles/   offline-mock.json（与产品 profile 无关的独立配置）
 docs/       结项档 + A2 主机依赖侦察 + B2/B3 大厅/登录侦察 + T4 运行时出网清单 + T4b 无 PSN 对照 + B9 登录体 schema
@@ -120,6 +121,6 @@ python tools\replay_client.py --src samples\store-season --mode server `
 | 除 API 主机外的主机依赖（A2） | **✓✓ 运行时抓包完成**：无第二条游戏自有主机；旁路=PlayFab/EOS+EAC/Steam/Sony PC（见 [T4 文档](docs/T4-RUNTIME-EGRESS-2026-11-21.md)） |
 | 出网审计的盲区 | T4 已补：DNS/SNI/UDP 五元组（UDP 3075=PlayFab QoS、3478/3479=Steam SDR、高端口=EOS） |
 | PSN 是否必需 | **非必需**：未绑定 PSN 的 Steam 号可跳过绑定页进船，官方 API 仍是纯本地接管；Sony 侧域名两账号都出现（见 [T4b](docs/T4b-NOPSN-CONTROL-2026-11-21.md)） |
-| **阶段1 必要性（T7，3 组×2 种处置）**：PlayFab/Sony 断开或伪 `200 {}` 都不阻断；**EOS/EAC 两种处置都被拦**（EAC 需真实协议交互，假服务骗不过）⇒ 阶段1 只需接管官方 API + 保 EAC 网络；阶段2 必须保留 PlayFab | **✓✓ 实机**（6 轮差分 + 用户目视确认，见 [T7](docs/T7-STAGE1-NECESSITY-2026-11-21.md)） |
+| **阶段1 必要性（T7，3 组×2 种处置 + 整局）**：PlayFab/Sony 断开或伪 `200 {}` 都不阻断，**PlayFab 黑洞下完整一局也通过**（27.1s 主界面→120.2s 进图→352.3s 结算，59 请求/0 错/0 fallback）；**EOS/EAC 两种处置都被拦**（EAC 需真实协议交互）⇒ 阶段1 只需接管官方 API + 保 EAC 网络；阶段2 必须保留 PlayFab | **✓✓ 实机**（6 轮差分 + T7b 整局 + 用户目视确认，见 [T7](docs/T7-STAGE1-NECESSITY-2026-11-21.md)） |
 | 登录体 schema（B9）：437 B（绑定，9 字段）vs 346 B（未绑，6 字段），91 B = 3 个可选字段（票据长度恒定 116） | **✓✓ 实机**（见 [B9](docs/B9-LOGIN-BODY-SCHEMA-2026-11-21.md)）；"真登录过就会带"的缓存假设 **✗ 否证**，PSN 绑定关系 **✓ 支持** |
 | 尚未在 mock 里还原的端点 | `Progression/inventory/consume`、`Progression/Achievements`（T3 新发现，已登记 200 `{}`；数值还原需补抓） |

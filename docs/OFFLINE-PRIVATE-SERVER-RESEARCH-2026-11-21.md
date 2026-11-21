@@ -279,6 +279,8 @@ T4 只拿到「域名/端口/字节数」，不知道旁路在传什么。用研
 * **阶段1 最小放行清单**：官方 API（接管）+ **EOS/EAC 网络必须可达**；**PlayFab 与 Sony 可不接管**（断开/伪接管都不阻断）。
   EAC 不能用"本地假服务"绕过（伪 `200 {}` 同样被拦）⇒ 要完全无外网只能 EAC-off 启动。
   若要「完全无外网」，EAC-on 启动会失败 → 需 EAC-off 直启（历史已证可行），属产品取舍。
+* **T7b（整局验收）**：PlayFab 黑洞下完整打了一局 —— 27.1 s 到主界面 → 120.2 s 进图 → 352.3 s 结算
+  （`Mission/end 866B → 200 1617B`），窗口 59 请求 / 0 非 200 / 0 fallback ⇒ 阶段1 不接管 PlayFab 已被整局证明。
 * **阶段2**：PlayFab **不能被空应答顶替**——R4 里 Party/Lobby 链在第一步 `ListPartyQosServers` 就放弃，
   后续 `RequestParty`/`CreateLobby` 不再调用 ⇒ 自建联机**必须保留 PlayFab 云**（Lobby + Party 中继），
   "完全自建"等同重做 Party 协议与 DTLS 中继，不建议。

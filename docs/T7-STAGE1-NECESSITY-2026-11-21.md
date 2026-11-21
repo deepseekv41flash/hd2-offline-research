@@ -7,7 +7,7 @@
 
 ## 0. 一句话结论
 
-**PlayFab 与 Sony 侧在阶段1 可以不管（断掉、伪接管都能正常进主界面）；EOS/EAC 是硬依赖，
+**PlayFab 与 Sony 侧在阶段1 可以不管（断掉、伪接管都能正常进主界面；PlayFab 断开的**完整一局**也已通过）；EOS/EAC 是硬依赖，
 而且**两种处置都被拦**：断开 → EAC 弹「无法连接反作弊网络，游戏将退出」；伪 `200 {}` → 同样被拒。
 ⇒ EAC 需要与真实服务完成协议交互，"本地假服务"骗不过去。**
 而 PlayFab 虽然阶段1 非必需，但它**不能被"空应答"糊弄**：Party/Lobby 链在第一步 `ListPartyQosServers`
@@ -52,7 +52,25 @@ R4: ListPartyQosServers → 200 {}（缺 QosServers 字段）
 对比 T6a 正常放行时的顺序：`ListPartyQosServers`(拿到 17 区) → `pubsub/negotiate` → `Party/RequestParty`(分配中继) →
 `Lobby/CreateLobby`(签发 connectionString)。**第一步拿不到有效数据，后面整条链就不走了。**
 
-### 2.2 EOS/EAC 为什么是硬依赖
+### 2.2 T7b：PlayFab 不可达下的**完整一局**（✓✓，2026-11-21 12:39–12:45）
+
+主界面不阻断只是第一步；阶段1 真正要证的是"整局也能打"。用 `tools/t7b_probe.py` 把流程包起来
+（起 mock + MITM、PlayFab 黑洞、改 IE 代理、启动、等用户打局、收尾复原）：
+
+| 时刻 | 端点 | 请求 | 响应 | 命中 |
+|---|---|---|---|---|
+| 12:39:57 | `POST /api/Operation/Create` | 301 B | 200 / 60 B | `state:operation_create` |
+| 12:40:53 | `POST /api/Operation/Mission/Start` | 167 B | 200 / 52 B | `state:mission_start` **← 进图**（主界面后 120 s） |
+| 12:44:45 | `POST /api/Progression/inventory/consume` | 233 B | 200 / 2 B | `state:progression_consume` |
+| 12:44:45 | `POST /api/Operation/Mission/end` | 866 B | **200 / 1,617 B** | `state:mission_end` **← 结算**（进图后 232 s） |
+| 12:44:52 | `PUT /api/Progression/Achievements` | 141 B | 200 / 2 B | `state:progression_achievements` |
+| 12:44:52 | `POST /api/Mission/Session` | 1,584 B | 202 / 0 B | `state:mission_session` |
+
+* 主界面 **27.1 s**；窗口内 **59 条请求、0 个非 200、0 fallback**；
+* `Abandon` 未在本窗口出现（探针在结算后 20 s 收尾，T3b 里它是结算后约 42 s 才发，属时序问题，不影响结论）；
+* ⇒ **PlayFab 完全不可达时，单人「进图 → 局内 → 撤离结算」全链路正常** ⇒ 阶段1 可以不接管 PlayFab（`✓✓`）。
+
+### 2.3 EOS/EAC 为什么是硬依赖
 
 `api.epicgames.dev` 同时承载 **EOS 身份/配置** 和 **EAC 反作弊消息通道**（T6a §2.2：`/anticheat/v6|v8/*`）。
 EAC 启动时要做网络检查；断开后 EAC 直接失败并令游戏退出（截图见 `state/evidence/t7/eac-error-r2-first.png`）。
@@ -65,7 +83,7 @@ EAC 启动时要做网络检查；断开后 EAC 直接失败并令游戏退出�
 |---|---|---|
 | 官方 API（`api.live.prod…`） | **必须接管**（mock 已在做） | T1–T3b |
 | **EOS/EAC（`api.epicgames.dev`）** | **必须可达**（不能断） | R2：断开即 EAC 报错退出 |
-| PlayFab（`974a9.playfabapi.com`） | **可不接管**（断开或空应答都不阻断） | R1/R4 |
+| PlayFab（`974a9.playfabapi.com`） | **可不接管**（断开/空应答不阻断启动，且**整局任务链已通过**） | R1/R4 + T7b |
 | Sony（`*.wwsga.me` / `pss-cloud.net`） | **可不接管** | R3 |
 
 ⇒ 也就是说：**阶段1 的产品不需要把 PlayFab 纳入接管面**，省掉一大块复杂度；只有 EAC 的网络前置必须满足。
@@ -88,6 +106,7 @@ EAC 启动时要做网络检查；断开后 EAC 直接失败并令游戏退出�
 |---|---|---|
 | PlayFab 断开/伪接管不阻断单人启动到主界面 | **✓✓ 实机**（用户目视确认 + 35/39 行稳态轮询） | R1/R4 |
 | Sony 侧断开不阻断 | **✓✓ 实机** | R3 |
+| **PlayFab 不可达时完整单人任务可通过** | **✓✓ 实机** | T7b：27.1 s 主界面 → 120.2 s 进图 → 352.3 s 结算，59 请求 / 0 非 200 / 0 fallback |
 | EOS/EAC 断开 ⇒ EAC 报错、游戏退出 | **✓✓ 实机**（2 次复现 + 截图） | R2 |
 | 空 `200 {}` 就能顶替 PlayFab 的联机功能 | **✗ 否证** | R4：Party/Lobby 链在第一步放弃 |
 | 阶段1 需要接管 PlayFab | **✗ 否证（不需要）** | R1/R4 |
@@ -105,6 +124,11 @@ python tools\t7_probe.py --name sony-blackhole     --blackhole crs.api.wwsga.me,
 python tools\t7_probe.py --name playfab-fake200    --fake 974a9.playfabapi.com
 python tools\t7_probe.py --name sony-fake200       --fake crs.api.wwsga.me,testament.api.wwsga.me,clientconfig.api.wwsga.me,pss-cloud.net
 python tools\t7_probe.py --name eos-fake200        --fake api.epicgames.dev
+
+# T7b：PlayFab 黑洞下打完整一局（用户操作，探针自动判定进图/结算并复原代理）
+python tools\t7b_probe.py --timeout-mission 900
+# 阶段1 最终验收：PlayFab + Sony 一起黑洞（= 阶段1 部署形态）
+python tools\t7b_probe.py --name stage1-combo-mission --blackhole "974a9.playfabapi.com,crs.api.wwsga.me,testament.api.wwsga.me,clientconfig.api.wwsga.me,pss-cloud.net"
 ```
 
 判据看 `state/evidence/t7/<name>.json` 的 `verdict`：`stable` = 未阻断；`eac_blocked` = 被 EAC 拦下。
@@ -114,5 +138,6 @@ python tools\t7_probe.py --name eos-fake200        --fake api.epicgames.dev
 * 判据里的「≥15 行稳态轮询」是经验阈值（R1=35 / R3=41 / R4=39 vs R2=7，分布很清楚），不是协议级判据；
 * EAC 弹框需要人眼确认（本轮已由用户两次截图确认；`helldivers2` 进程在弹框期间仍存活，进程存活不能当判据）；
 * 只覆盖「启动到主界面」；**未**覆盖「进图打一局」在该组断开下是否仍可（阶段1 若采用"不接管 PlayFab"，
-  建议再补一次 PlayFab 黑洞下的整局验证，预计通过——因为任务链只走官方 API）；
+  已由 T7b 补上（PlayFab 黑洞整局通过）；
+* **Sony 黑洞的整局**未单独跑（内容层面与游戏逻辑无关），计划用「PlayFab+Sony 组合黑洞」一轮做阶段1 最终验收；
 * 未测 EAC-off 启动在完全无网络环境的表现（历史记录显示直启可行，但本轮未复测）。
