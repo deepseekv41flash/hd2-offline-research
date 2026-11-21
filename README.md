@@ -67,7 +67,7 @@ tools/      抓包分析 / 样本构建 / 回放验证 / 控制台
   t7b_probe.py        T7b 整局验收探针（PlayFab/Sony 黑洞下打一局，自动判定进图/结算并复原代理）
 tests/      pytest 77 项（含真实抓包矩阵、TLS 端到端、脱敏门禁、B9 schema 采集/对照、TCP 转发）
 profiles/   offline-mock.json（与产品 profile 无关的独立配置）
-docs/       阶段1 定稿摘要(STAGE1-FINAL) + 结项档 + A2 主机依赖 + B2/B3 大厅/登录 + T4 出网清单 + T4b 无 PSN + B9 登录体 schema + T6 MITM 取证 + T7 必要性差分
+docs/       阶段1 定稿摘要(STAGE1-FINAL) + 结项档 + A2 主机依赖 + B2/B3 大厅/登录 + T4 出网清单 + T4b 无 PSN + B9 登录体 schema + T6 MITM 取证 + T7 必要性差分 + T8 计划（数据面取证/EAC-off）
 ```
 
 ## 5 分钟跑起来（不需要游戏、不需要管理员）
