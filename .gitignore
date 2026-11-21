@@ -14,3 +14,8 @@ samples/
 # 原始抓包（绝不应出现在本仓）
 raw-capture/
 *.log
+
+# 客户端测试包里的临时证书与脚本运行产物（每次部署重新签发，随 zip 分发，不入库）
+kit/stage2/ca.cer
+kit/stage2/ca.crl
+kit/stage2/backup/

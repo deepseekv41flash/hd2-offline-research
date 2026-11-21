@@ -86,9 +86,11 @@ def _serve_in_process() -> ThreadingHTTPServer:
 
 # ------------------------------------------------------------------ HTTP 客户端
 class Client:
-    def __init__(self, base: str, account: str, *, insecure: bool = False):
+    def __init__(self, base: str, account: str, *, insecure: bool = False,
+                 host_header: str = ""):
         self.base = base.rstrip("/")
         self.account = account
+        self.host_header = host_header
         self.ctx = ssl.create_default_context()
         if insecure:
             self.ctx.check_hostname = False
@@ -99,6 +101,9 @@ class Client:
         req = urllib.request.Request(self.base + path, data=data, method=method)
         req.add_header("Content-Type", "application/json")
         req.add_header("X-HD2-Account", self.account)
+        if self.host_header:
+            # 反代形态验活：连 127.0.0.1 但让 nginx 按真实域名选 vhost
+            req.add_header("Host", self.host_header)
         started = time.monotonic()
         try:
             with urllib.request.urlopen(req, timeout=10, context=self.ctx) as resp:
@@ -118,10 +123,11 @@ class Client:
 
 
 # ------------------------------------------------------------------ 场景
-def run(base: str, *, insecure: bool = False) -> int:
+def run(base: str, *, insecure: bool = False, host_header: str = "") -> int:
     acc_a = "probe-" + uuid.uuid4().hex[:8]
     acc_b = "probe-" + uuid.uuid4().hex[:8]
-    a, b = Client(base, acc_a, insecure=insecure), Client(base, acc_b, insecure=insecure)
+    a = Client(base, acc_a, insecure=insecure, host_header=host_header)
+    b = Client(base, acc_b, insecure=insecure, host_header=host_header)
     failures: list[str] = []
 
     def check(name: str, ok: bool, detail: str = "") -> None:
@@ -183,6 +189,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--self-test", action="store_true", help="进程内起后端并自测（不需要游戏/端口 443）")
     ap.add_argument("--url", default="", help="对已运行的后端探测，如 http://127.0.0.1:443")
     ap.add_argument("--insecure", action="store_true", help="https 时不校验证书（自签测试用）")
+    ap.add_argument("--host-header", default="",
+                    help="覆盖 Host 头（经 nginx 反代验活时填真实域名，如 api.live.prod.thehelldiversgame.com）")
     args = ap.parse_args(argv)
     if args.self_test:
         srv = _serve_in_process()
@@ -194,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
             srv.shutdown()
     if args.url:
         print(f"== 远端后端 {args.url} ==")
-        return run(args.url, insecure=args.insecure)
+        return run(args.url, insecure=args.insecure, host_header=args.host_header)
     ap.error("需要 --self-test 或 --url")
 
 

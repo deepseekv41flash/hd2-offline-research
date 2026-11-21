@@ -60,6 +60,18 @@ if (Test-Path $thumbFile) {
   Check '证书在 CurrentUser\Root 中' ($found.Count -ge 1) "(thumbprint=$thumb)"
 }
 
+# 2b) Steam 屏蔽行 / CRL / 时钟 / Steam 在线（阶段2 新增的必查项）
+if (-not $RouteProxy) {
+  $steamBlocks = @(Get-SteamBlockLines)
+  Check 'hosts 无生效中的 Steam 屏蔽行' ($steamBlocks.Count -eq 0) "count=$($steamBlocks.Count)（用 install-hosts.ps1 会自动临时注释并保留备份）"
+  Check 'login.steampowered.com 未被指到本地' (-not (Test-HostsLoginBlocked)) '被屏蔽会让 Steam 登录/联机失败'
+}
+Check 'CRL 服务可取（127.0.0.1:18081，内容与 ca.crl 一致）' (Test-CrlEndpoint 18081) '取不到 CRL 时 Schannel 会拒绝握手（CRYPT_E_NO_REVOCATION_CHECK）'
+$steamProcs = @(Get-Process -Name steam -ErrorAction SilentlyContinue)
+Check 'Steam 客户端在运行' ($steamProcs.Count -ge 1) $(if ($steamProcs.Count) { '' } else { '先启动并登录 Steam，再从 Steam 启动游戏' })
+$ts = Get-TimeSyncStatus
+Check '系统时间已与网络源同步' (-not ($ts.Unsynced -or $ts.LocalCmos)) $(if ($ts.Unsynced -or $ts.LocalCmos) { '管理员 PowerShell 运行 w32tm /resync 后重跑' } else { '' })
+
 # 3) 环境
 $vpn = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
     $_.Status -eq 'Up' -and $_.InterfaceDescription -match 'VPN|Radmin|WireGuard|Tailscale|ZeroTier|Hamachi'

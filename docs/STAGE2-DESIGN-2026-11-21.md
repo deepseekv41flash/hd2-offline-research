@@ -185,7 +185,7 @@ PlayFab 兜底 ⇒ 若双机同 Steam 好友时数据面走 SDR，则阶段2 **�
 | `server.txt` | 我方测试服地址（发现层）、测试域名、CA 指纹（便于核对） |
 | `test-card.md` | 测试步骤卡：启动顺序、要观察的现象、何时截图、失败判据 |
 | （可选）`recon-verify.ps1` | 测试前自检：管理员权限、hosts 命中、证书已装、游戏 buildid/SHA256 与基线一致、VPN 已断、代理已关、时间偏差 < 5 分钟 |
-| 说明 | 证书用**用户级**安装（`certutil -user -addstore Root`，侦察已证可写）；hosts 修改**只增删带我方标记的行**（保留机器上已有的 Steam 屏蔽行）；脚本未提权时明确提示「右键以管理员身份运行」而不是半途失败 |
+| 说明 | 证书用**用户级**安装（`certutil -user -addstore Root`，侦察已证可写）；hosts 修改**只增删带我方标记的行**；**2026-11-21 更新**：实测志愿者 hosts 里 11 条 `#S302` Steam 屏蔽行（含 `login.steampowered.com`）会让 Steam 登录/联机失败，故改为「测试期间临时加前缀注释、`rollback-all` 原样还原」（见 `STAGE2-PREFLIGHT-AUDIT-2026-11-21.md` §2.3）；脚本未提权时明确提示「右键以管理员身份运行」而不是半途失败 |
 
 ### 11.4 我方侧准备（V1 同时做）
 

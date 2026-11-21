@@ -9,6 +9,19 @@ if ($DryRun) { Write-Ok "[DryRun] 将收集 hosts / 游戏日志 / 接入备份 
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 
 Copy-Item -LiteralPath (Get-HostsPath) -Destination (Join-Path $OutDir 'hosts.txt') -Force -ErrorAction SilentlyContinue
+# 阶段2 排障用：时钟同步状态、Steam 屏蔽行现状、CRL 服务状态、后端可达性
+try { (& w32tm.exe /query /status 2>&1 | Out-String) | Set-Content -LiteralPath (Join-Path $OutDir 'w32tm-status.txt') -Encoding UTF8 } catch {}
+try {
+  $report = @()
+  $report += '# hosts 生效中的 Steam 屏蔽行（应为 0；本脚本注释过的行带前缀）'
+  $report += @(Get-SteamBlockLines | ForEach-Object { "ACTIVE  $_" })
+  $report += '# 本脚本注释过的行'
+  $report += @(Get-HostsLines | Where-Object { $_.StartsWith($script:SteamDisablePrefix) } | ForEach-Object { "DISABLED $_" })
+  $report | Set-Content -LiteralPath (Join-Path $OutDir 'hosts-steam-state.txt') -Encoding UTF8
+} catch {}
+try {
+  "CRL 127.0.0.1:18081 可取: $(Test-CrlEndpoint 18081)" | Set-Content -LiteralPath (Join-Path $OutDir 'crl-state.txt') -Encoding UTF8
+} catch {}
 $arrow = Join-Path $env:APPDATA 'Arrowhead\Helldivers2'
 if (Test-Path $arrow) {
   Copy-Item -Path (Join-Path $arrow '*') -Destination $OutDir -Recurse -Force -ErrorAction SilentlyContinue

@@ -1,1 +1,4 @@
 在服务器上先执行：chmod +x install.sh cert-issue.sh healthcheck.sh uninstall.sh
+（install.sh 会以 root 运行；nginx 形态会：写 /www/server/panel/vhost/nginx/hd2-discovery.conf、
+ 拷证书到 /www/server/panel/vhost/cert/hd2-discovery/、执行 nginx -t 与 nginx -s reload。
+ 只新增上面两个路径下的文件，不改业务 vhost；卸载时 uninstall.sh 会删除它们。）

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import gzip
+import ipaddress
 import json
 import socket
 import ssl
@@ -27,6 +28,33 @@ from .bodycapture import BodyShapeCapture
 from .handler import MockHandler, Response
 
 MAX_BODY = 8 << 20
+
+# 反代（nginx）模式下，TCP 对端都是回环地址；只有对端是回环时才信任转发头，
+# 否则直连客户端可以自报任意 IP 冒充另一个账号。
+_LOOPBACK_ADDRS = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
+
+
+def effective_client_addr(peer_ip: str, headers: dict[str, str],
+                          trust_proxy: bool = False) -> str:
+    """返回用于「账号归属」的客户端地址。
+
+    直连模式（trust_proxy=False）直接用 TCP 对端地址（阶段1 行为不变）。
+    nginx 反代模式（trust_proxy=True）下对端是回环，改用 `X-Real-IP`，其次
+    `X-Forwarded-For` 的第一个地址。两个头都只在对端是回环时采信。
+    """
+    if not trust_proxy or peer_ip not in _LOOPBACK_ADDRS:
+        return peer_ip
+    for key in ("x-real-ip", "x-forwarded-for"):
+        raw = (headers.get(key) or "").strip()
+        if not raw:
+            continue
+        candidate = raw.split(",")[0].strip().strip('"')
+        try:
+            ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        return candidate
+    return peer_ip
 
 
 def _now_stamp() -> str:
@@ -177,7 +205,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 logger.log(f"{_now_stamp()} !! body-shape 采集失败: {exc!r}")
         try:
             resp = mock.handle(self.command, self.path, body, headers,
-                               client_addr=(self.client_address[0] if self.client_address else ""))
+                               client_addr=self._client_addr(headers))
         except Exception as exc:  # noqa: BLE001
             logger.log(f"{_now_stamp()} !! {self.command} {self.path} handler 异常: {exc!r}")
             resp = Response(500, b'{"error":"handler crashed"}', "application/json", "error")
@@ -186,9 +214,12 @@ class _ApiHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             logger.log(f"{_now_stamp()} !! {self.command} {self.path} 客户端断开")
             return
+        peer_ip = self.client_address[0] if self.client_address else ""
+        eff_ip = self._client_addr(headers)
+        via = "" if eff_ip == peer_ip else f" via {peer_ip}"
         logger.log(
             f"{_now_stamp()} {self.command:6s} {self.path} "
-            f"{len(body)}B -> {resp.status} {len(resp.body or b'')}B [{resp.source}]"
+            f"{len(body)}B -> {resp.status} {len(resp.body or b'')}B [{resp.source}]{via}"
         )
         if getattr(server, "log_headers", False):
             shapes = ",".join(
@@ -196,6 +227,11 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 if k not in ("authorization", "cookie", "x-session-id")
             )
             logger.log(f"{_now_stamp()}   HDR {self.command} {self.path} {shapes}")
+
+    def _client_addr(self, headers: dict[str, str]) -> str:
+        peer_ip = self.client_address[0] if self.client_address else ""
+        return effective_client_addr(
+            peer_ip, headers, getattr(self.server, "trust_proxy_headers", False))
 
     def do_GET(self):  # noqa: N802
         self._dispatch()
@@ -243,7 +279,7 @@ class MockServer:
     def __init__(self, handler: MockHandler, *, host: str, port: int,
                  cert_dir: Path | str, log_dir: Path | str | None = None,
                  log_headers: bool = False, crl_port: int = 18081,
-                 serve_crl: bool = True):
+                 serve_crl: bool = True, trust_proxy_headers: bool = False):
         self.handler = handler
         self.host = host
         self.port = port
@@ -254,6 +290,8 @@ class MockServer:
         self.log_headers = log_headers
         self.crl_port = crl_port
         self.serve_crl = serve_crl
+        # nginx 反代形态：账号归属改用 X-Real-IP / X-Forwarded-For（见 effective_client_addr）
+        self.trust_proxy_headers = bool(trust_proxy_headers)
         self.httpd: ThreadingHTTPServer | None = None
         self.crl_srv: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -276,6 +314,7 @@ class MockServer:
         httpd.logger = self.logger          # type: ignore[attr-defined]
         httpd.log_headers = self.log_headers  # type: ignore[attr-defined]
         httpd.body_capture = self.body_capture  # type: ignore[attr-defined]
+        httpd.trust_proxy_headers = self.trust_proxy_headers  # type: ignore[attr-defined]
         self.httpd = httpd
         try:
             self.port = int(httpd.server_address[1])  # port=0 时取实际端口

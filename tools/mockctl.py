@@ -157,9 +157,11 @@ def cmd_serve(args) -> int:
 
     mission_end_dir = Path(args.mission_end) if args.mission_end else REPO / "samples" / "mission-end"
     handler = _build_handler(data_dir, profile, mission_end_dir)
+    net_cfg = profile.get("net") or {}
+    trust_proxy = bool(args.trust_proxy_headers or net_cfg.get("trust_proxy_headers"))
     srv = MockServer(handler, host=host, port=port, cert_dir=cert_dir, log_dir=log_dir,
                      log_headers=args.log_headers, crl_port=crl_port,
-                     serve_crl=not args.no_crl)
+                     serve_crl=not args.no_crl, trust_proxy_headers=trust_proxy)
     try:
         srv.start()
     except RuntimeError as exc:
@@ -283,6 +285,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--capture-bodies", action="store_true",
                    help="B9：只记登录体 schema（字段名/长度/字符类/hash），不落原值")
     p.add_argument("--no-crl", action="store_true")
+    p.add_argument("--trust-proxy-headers", action="store_true",
+                   help="nginx 反代形态：账号归属改用 X-Real-IP / X-Forwarded-For（仅对端是回环时采信）")
     p.add_argument("--dry-run", action="store_true", help="绑 127.0.0.1:18443，不抢 443")
     p.add_argument("--insecure-ok", action="store_true", help="跳过未装信任的告警")
     p.set_defaults(fn=cmd_serve)

@@ -1,0 +1,41 @@
+{
+  "schema": "hd2-offline-mock-profile-v1",
+  "note": "阶段2 联机发现层（nginx 反代形态）：mock 只监听回环 8443（TLS），由部署机自带的 nginx 在 443/SNI 上终止 TLS 并转发；服务端不启 CRL。适用于 443 已被业务 nginx 占用的机器（服务器 A）。",
+  "data_dir": "samples/store-season",
+  "cert_dir": "state/certs",
+  "log_dir": "state/logs",
+  "bind": {
+    "host": "127.0.0.1",
+    "port": 8443,
+    "crl_port": 18081
+  },
+  "net": {
+    "trust_proxy_headers": true
+  },
+  "timeshift": {
+    "enabled": true,
+    "refresh_span_seconds": 604800
+  },
+  "fallback": {
+    "status": 200,
+    "body": "{}"
+  },
+  "lobby": {
+    "mode": "discovery",
+    "echo_put": false,
+    "ttl_seconds": 600,
+    "max_members": 4
+  },
+  "body_shapes": {
+    "enabled": true,
+    "dir": "state/evidence/stage2",
+    "paths": ["/api/Account/Login", "/api/lobby", "/api/lobby/*/member", "/api/lobby/accounts"]
+  },
+  "mission": {
+    "keep_template_outcome": false
+  },
+  "identity": {
+    "account_id": "76561190000000000",
+    "player_name": "Helldiver"
+  }
+}

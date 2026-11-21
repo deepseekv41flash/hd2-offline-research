@@ -1,5 +1,5 @@
 [Unit]
-Description=HD2 stage-2 discovery backend (research mock, multi-client lobby)
+Description=HD2 stage-2 discovery backend (research mock, mode=@MODE@)
 After=network-online.target
 Wants=network-online.target
 
@@ -9,14 +9,13 @@ User=hd2disc
 Group=hd2disc
 WorkingDirectory=/opt/hd2-discovery
 Environment=PYTHONUNBUFFERED=1
-# 绑定 443 不需要 root：由 CAP_NET_BIND_SERVICE 授权
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+@CAPS_AMBIENT@
+@CAPS_BOUNDING@
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ReadWritePaths=/opt/hd2-discovery/state /opt/hd2-discovery/logs
-ExecStart=/opt/hd2-discovery/venv/bin/python -m tools.mockctl serve --profile profiles/coop-discovery.json
+ExecStart=@PYTHON@ -m tools.mockctl serve @SERVE_ARGS@
 Restart=always
 RestartSec=3
 StandardOutput=append:/opt/hd2-discovery/logs/service.log
