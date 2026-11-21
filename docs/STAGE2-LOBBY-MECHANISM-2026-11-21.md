@@ -79,3 +79,15 @@ Party 侧：`RequestParty` → 独立 Azure VM（实测 `4.193.214.175:30460/UDP
 - 下一步最小验证：两个**官方**客户端（用户 + 志愿者，不装我们的 mock）在同一星球 Public 建房/加入，
   看是否成功——这一步能区分"是我们的 mock 干扰"还是"PlayFab 本身/网络"。
   ⚠ 这需要志愿者，且意味着 E2 的改造方向可能要重估。
+
+## 5 更正（2026-11-21 23:50，用户指出）
+
+**FindLobbies 只是「公开匹配」路径**：房主在大厅列表里被路人看到时，需要选星球/任务让
+SearchData 的 `number_key3`(warId)/`number_key4`(planetId)/`number_key7`(war 时钟) 有值。
+
+但**好友联机不需要选星球**：好友在飞船上时状态显示 `On Ship`，可以直接点加入。
+→ 因此「必须选星球」**不能**当作 E2 好友加入失败的原因；好友路径大概率仍走
+官方 API 的大厅公告（我们的发现层：`/api/lobby/accounts` + `/member`），再进入 PlayFab `JoinLobby`。
+E2 好友加入的真正卡点更可能是：
+1. 两端 Steam 好友**没有同步成 PlayFab title_player_account 好友** → friends-only 大厅 `JoinLobby` 被拒；
+2. 或 PlayFab/Party 成功之后的**游戏层握手**（单机加入陌生厅 10–20 s 后出现 `client_api_error_occurred`）。

@@ -71,3 +71,12 @@
 - 文档：本文件、`STAGE2-LOBBY-MECHANISM`、`STAGE2-PLAYFAB-FLOW`、`STAGE2-LOCAL-TESTS`、
   `STAGE2-CAPTURE-RUNBOOK`、`STAGE2-DESIGN-STALE-LOBBY`、契约档 §6
 - 服务器 A 仍在线（`/opt/hd2-discovery`，状态持久化 `state/discovery-state.json`）。
+
+## 7 更正（2026-11-21 23:50，用户指出）
+
+正常好友联机**不需要**选星球/任务：好友在飞船上（`On Ship`）可以直接加入。
+`FindLobbies` 的星球/时间过滤只影响**公开匹配**。因此 §4 的卡点排序应改为：
+
+1. **好友路径仍走官方 API 公告 + PlayFab JoinLobby**，失败点更可能是
+   「Steam 好友未同步成 PlayFab entity 好友 → Friends-only 大厅 JoinLobby 被拒」或游戏层握手；
+2. 公开匹配路径（FindLobbies + 星球过滤）本次不作为好友失败的归因。
