@@ -104,3 +104,61 @@ $ python -m pytest -q
 2. 抓包工具记录 lobby 请求体的 **sha8/字段名**（已有 `BodyShapeCapture`，profile 已配）；
 3. 若客户端要求回声，把 `echo_put` 固化为 profile 默认并补单测；
 4. 双机实测后，把「端到端进厅耗时」写入 M2 验收记录。
+
+## 6. 实机捕获的真实 body（2026-11-21 23:25，A 机 `HD2_DUMP_BODIES`）
+
+> 来源：真实客户端（Steam 在线、经中继）在 A 机 `PUT /api/lobby` 与 `POST /api/lobby/accounts` 的
+> 原始请求体；存放在 gitignored 的 `state/evidence/e2prep/real-bodies/`（含会话描述符，勿外发）。
+> A5 回填据此更新，脱敏后摘要如下。
+
+### 6.1 `PUT /api/lobby`（1350 B，23 个字段）
+
+```json
+{
+  "lobbyId": "<uuid>.r-20260323",
+  "connectionString": "cv2:<同一 uuid>.r-20260323|<6 位十进制>|kv1:<44 字符 base64>",
+  "privacyMode": 2,
+  "state": 1, "numLobbyMembers": 1,
+  "memberAccountIds": [null, "<20 位 accountId>"],
+  "buildGameHash": "<16 hex>", "warId": -1, "regionIndex": -1, "territoryId": -1,
+  "players": [
+    {"memberAccountId": "<20 位>", "isHost": true, "playerName": "<名字>", "playerRank": 199, "hasInfo": true},
+    {"memberAccountId": "0", ...} × 3
+  ]
+}
+```
+
+要点：
+1. **`connectionString` 由 PlayFab Lobby 服务签发**（23:24 用 MITM 抓到 `POST /Lobby/CreateLobby`
+   的响应原文：`{"LobbyId":"<uuid>.r-20260323","ConnectionString":"cv2:<uuid>.r-20260323|619689|kv1:<...>"}`）。
+   形状可合成，但**只有 PlayFab 认可的那个串才能被 `JoinLobby` 接受** —— 详见
+   `docs/STAGE2-PLAYFAB-FLOW-2026-11-21.md`。
+2. `privacyMode` 实测出现过 `0 / 1 / 2`；本机 `user_settings.config` 里的 `privacy = 1`，
+   而同一次 PUT 是 `2` ⇒ **字段值与设置项不是一一对应**，映射待校准（0=Public 已由大厅列表验证过）。
+3. `memberAccountIds` 允许 `null` 占位（`[null, "<id>"]`），不是纯字符串数组。
+4. `warId/regionIndex/territoryId` 可以是 `-1`（未进入具体战役/区域时）。
+
+### 6.2 `POST /api/lobby/accounts`（2637 B）
+
+```json
+{"ids": ["<18~20 位 accountId>", ...]}      // 实测一次 112 个
+```
+
+要点：客户端是**按 id 批量查询大厅**（112 个 ≈ 好友 + 最近玩家的 accountId 集合）。
+我们的实现目前忽略 `ids` 返回全量大厅；**契约修订**：应按 `ids` 过滤（至少返回这些账号的大厅），
+否则客户端可能在大厅列表里看到不该出现的厅 / 或匹配不上它关心的账号。
+待做：在 discovery `accounts()` 支持 `ids` 过滤 + 单测。
+
+### 6.3 时序观察（同一轮客户端启动）
+
+```
+23:24:24 POST /api/Account/Login 437B（注意：437B 是主号登录体形状，346B 是未绑定变体）
+23:24:27 DELETE /api/lobby/clear
+23:24:32 POST /api/lobby/accounts {"ids":[112 个]}
+23:25:12 POST /api/lobby/accounts {"ids":[112 个]}
+23:25:18 POST /api/lobby/<旧 id>/member  → 200 2B（服务端未知 → 按终态拒绝）
+23:25:28 PUT /api/lobby（带上面 6.1 的 body，用**同一个**旧 id 重建大厅）
+```
+
+说明：客户端启动后会**先用上次的 lobbyId 尝试 member（rejoin）**，失败后才用同一 id 重建大厅；
+旧 id 在本地文件中**查不到**（见 §7），来源更可能是 PlayFab 云侧会话状态。

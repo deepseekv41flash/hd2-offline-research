@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import gzip
 import ipaddress
+import itertools
 import json
+import os
 import socket
 import ssl
 import threading
@@ -86,9 +88,19 @@ class _Logger:
 
 
 class _ExclusiveHTTPServer(ThreadingHTTPServer):
-    """独占绑定：与产品引擎一致，**不允许** SO_REUSEADDR 抢同一端口（交接档 §8.1）。"""
+    """独占绑定：不允许**另一个 listen 进程**抢同一端口（交接档 §8.1 的纪律仍然成立）。
 
-    allow_reuse_address = False
+    `allow_reuse_address=True` 只会让 TIME_WAIT 残留不再阻塞重启；内核仍然拒绝在
+    已有 LISTEN socket 的端口上再 bind，所以"443 只能有一个主人"这条没有被放宽。
+    2026-11-21 E2 实测：`systemctl restart` 后旧连接留下 TIME_WAIT，导致重启连续
+    三次 bind 失败（exit 3），服务进入 crash loop。
+    """
+
+    # POSIX：SO_REUSEADDR 只放行 TIME_WAIT，不会让第二个 LISTEN 抢到端口 → 安全，
+    #        且重启不再撞 TIME_WAIT（2026-11-21 A 机 systemctl restart 连挂三次的根因）。
+    # Windows：SO_REUSEADDR 语义不同（允许"抢已绑端口"），会破坏「443 只能有一个主人」
+    #        的独占纪律与对应测试 → 保持 False。
+    allow_reuse_address = (os.name != "nt")
     daemon_threads = True
 
 
@@ -227,6 +239,42 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 if k not in ("authorization", "cookie", "x-session-id")
             )
             logger.log(f"{_now_stamp()}   HDR {self.command} {self.path} {shapes}")
+        self._dump_lobby_bodies(body, resp)
+
+    # ---- 大厅 body 落盘（E2 现场取证 / 契约回填 / 单机实验用；默认关闭）------
+    _DUMP_SEQ = itertools.count(1)
+
+    def _dump_lobby_bodies(self, body: bytes, resp: Response) -> None:
+        """`HD2_DUMP_BODIES=<dir>` 时，把 /api/lobby* 的**原值与响应**各写一份。
+
+        用途（2026-11-21 E2 之后）：
+          * 契约回填：真实 PUT /member 的字段与值（含 connectionString 形态）；
+          * 单机实验（B6）：按真实 body 造"假大厅"做响应矩阵。
+        只在研究环境开启；目录应放在 gitignore 的 state/ 下，用完即删。
+        """
+        dump_dir = os.environ.get("HD2_DUMP_BODIES", "")
+        if not dump_dir or "/api/lobby" not in self.path:
+            return
+        try:
+            d = Path(dump_dir)
+            d.mkdir(parents=True, exist_ok=True)
+            seq = next(_ApiHandler._DUMP_SEQ)
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            slug = self.path.split("?")[0].strip("/").replace("/", "_")
+            info = {"t": datetime.now().isoformat(timespec="seconds"),
+                    "method": self.command, "path": self.path,
+                    "req_bytes": len(body or b""), "resp_bytes": len(resp.body or b""),
+                    "source": resp.source,
+                    "client": self._client_addr({k.lower(): v for k, v in self.headers.items()})}
+            (d / f"{ts}-{seq:05d}-{slug}-req.json").write_bytes(body or b"")
+            (d / f"{ts}-{seq:05d}-{slug}-resp.json").write_bytes(resp.body or b"")
+            with open(d / "index.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(info, ensure_ascii=False) + "\n")
+        except Exception as exc:  # noqa: BLE001
+            try:
+                self.server.logger.log(f"{_now_stamp()} !! lobby body dump 失败: {exc!r}")
+            except Exception:  # noqa: BLE001
+                pass
 
     def _client_addr(self, headers: dict[str, str]) -> str:
         peer_ip = self.client_address[0] if self.client_address else ""

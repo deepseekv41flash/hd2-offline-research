@@ -20,17 +20,30 @@
 from __future__ import annotations
 
 import copy
+import json
+import os
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Callable
 
 DEFAULT_TTL_SECONDS = 600.0
 DEFAULT_MAX_MEMBERS = 4
+DEFAULT_TOMBSTONE_TTL_SECONDS = 1800.0   # 关闭标记保留 30 min（远大于客户端 90 s 重试窗）
+STATE_VERSION = 1
 
 
 class DiscoveryLobby:
-    """多账号大厅发现服务（线程安全、内存态）。"""
+    """多账号大厅发现服务（线程安全、内存态 + 可选落盘）。
+
+    2026-11-21 E2 之后的两条设计约束（见 docs/STAGE2-DESIGN-STALE-LOBBY-2026-11-21.md）：
+      * **未知大厅必须有终态**：tombstone 表记录 `left/expired/server_reset/conflict`，
+        由 `resolve()` 给出 live/closed/unknown 三态，handler 据此返回关闭态而不是 `{}`；
+      * **状态跨重启**：`persist_path` 开启 JSON 原子落盘；干净退出写 `.clean` 标记，
+        非干净重启（标记缺失）会把上一代大厅全部转成 `server_reset` tombstone，
+        让客户端拿到终态而不是空对象。
+    """
 
     def __init__(
         self,
@@ -38,7 +51,9 @@ class DiscoveryLobby:
         ttl_seconds: float = DEFAULT_TTL_SECONDS,
         max_members: int = DEFAULT_MAX_MEMBERS,
         clock: Callable[[], float] = time.monotonic,
-        account_prefix: str = "acct",
+        account_prefix: str = "7656119",
+        persist_path: "str | Path | None" = None,
+        tombstone_ttl_seconds: float = DEFAULT_TOMBSTONE_TTL_SECONDS,
     ):
         self._lock = threading.Lock()
         self._ttl = float(ttl_seconds)
@@ -46,16 +61,23 @@ class DiscoveryLobby:
         self._clock = clock
         self._prefix = account_prefix
         self._seq = 0
-        # account_id -> {"ip", "instance_id", "last_seen", "lobby_id"}
+        # account_id -> {"ip", "instance_id", "last_seen", "lobby_id", "real_id", "profile"}
         self._accounts: dict[str, dict] = {}
         # 来源 IP -> account_id（登录时建立；未登录的首次调用懒建）
         self._by_ip: dict[str, str] = {}
         # lobby_id -> {"body": dict, "owner": account_id, "updated": float}
         self._lobbies: dict[str, dict] = {}
+        # lobby_id -> {"lobby_id", "closed_at", "reason"}
+        self._tombstones: dict[str, dict] = {}
+        self._tombstone_ttl = float(tombstone_ttl_seconds)
+        self._generation = 0
+        self._persist_path = Path(persist_path) if persist_path else None
         self._stats = {
             "login": 0, "put": 0, "get": 0, "get_hit": 0, "join": 0, "join_rejected": 0,
             "leave": 0, "conflict": 0, "expired": 0, "expired_accounts": 0,
+            "closed": 0, "closed_hit": 0,
         }
+        self._restore()
 
     # ------------------------------------------------------------------ 账号
     def _now(self) -> float:
@@ -63,7 +85,10 @@ class DiscoveryLobby:
 
     def _new_account_locked(self, ip: str, instance_id: str) -> str:
         self._seq += 1
-        account = f"{self._prefix}-{self._seq:06x}"
+        # 账号 ID 必须是 **20 位纯数字**（与真实 accountId 同形）：客户端会把大厅
+        # players[].memberAccountId 按 64 位整数解析，早期用的 "acct-000001" 会在
+        # game.dll 里触发 0xC0000005（2026-11-21 21:46 实测崩溃，dump 已取证）。
+        account = f"{self._prefix}{self._seq:013d}"
         self._accounts[account] = {
             "ip": ip, "instance_id": instance_id,
             "last_seen": self._now(), "lobby_id": None,
@@ -120,6 +145,45 @@ class DiscoveryLobby:
         if info is not None:
             info["last_seen"] = self._now()
 
+    def _learn_identity_locked(self, account: str, lobby: dict) -> None:
+        """从客户端自己 PUT 的大厅 body 里学会它的**真实 accountId** 与玩家资料。
+
+        为什么必须学：`POST /api/lobby/<id>/member` 的请求体是 `null`（2026-11-21 E2 实测），
+        服务端只能按来源 IP 归属。但**加入方自己的账号 ID 是客户端已知的**——如果我们把合成的
+        `7656119…` 写进返回 body 的 players[]，客户端会看到「我进厅了，但里面不是我」，
+        于是判定加入失败并每 ~90 s 重试一次 member（E2 现场现象）。
+        大厅 PUT 的 `players[].isHost=true` 那一项就是客户端自己的真实 ID（20 位数字）与名字/等级。
+        """
+        info = self._accounts.get(account)
+        if info is None:
+            return
+        players = lobby.get("players")
+        if not isinstance(players, list):
+            return
+        for p in players:
+            if not isinstance(p, dict) or not p.get("isHost"):
+                continue
+            mid = str(p.get("memberAccountId") or "")
+            if not _looks_like_account(mid):
+                continue
+            info["real_id"] = mid
+            profile = {k: p[k] for k in ("playerName", "playerRank", "experience",
+                                         "commendRank", "sourcePlatform") if k in p}
+            if profile:
+                info["profile"] = profile
+            return
+
+    def _fill_member_locked(self, slot: dict, account: str, member_id: str) -> None:
+        """把成员写进槽位：ID 用真实 ID，资料（名字/等级）尽量从它自己 PUT 过的缓存补。"""
+        slot["memberAccountId"] = member_id
+        slot["isHost"] = False
+        if "hasInfo" in slot:
+            slot["hasInfo"] = True
+        info = self._accounts.get(account) or {}
+        for k, v in (info.get("profile") or {}).items():
+            if k != "isHost":
+                slot[k] = v
+
     # ------------------------------------------------------------------ 大厅
     def put(self, account: str, body: Any) -> dict | None:
         """创建/更新大厅。返回保存后的 body；同一 lobbyId 被另一账号占用且未过期时返回 None。"""
@@ -136,13 +200,22 @@ class DiscoveryLobby:
                 self._stats["conflict"] += 1
                 return None
             now = self._now()
+            # 成员是**服务端权威**：owner 客户端周期重发它自己那份（可能还没看到新成员）的
+            # lobby body 时，不能把已加入的成员抹掉（2026-11-21 E2 实测：PUT 抹掉 join 后，
+            # 加入方永远看不到自己在厅里 → 卡加载 + 90s 重试）。
+            members_before = _member_ids(existing["body"]) if existing is not None else []
             _normalize_members(lobby, account)
+            _merge_member_ids(lobby, members_before, account)
+            self._tombstones.pop(lobby_id, None)     # 重开同一厅号：清掉关闭标记
             self._lobbies[lobby_id] = {"body": lobby, "owner": account, "updated": now}
             self._stats["put"] += 1
             info = self._accounts.setdefault(
                 account, {"ip": "", "instance_id": "", "last_seen": now, "lobby_id": None})
             info["lobby_id"] = lobby_id
             info["last_seen"] = now
+            self._learn_identity_locked(account, lobby)
+            _sync_member_count_locked(lobby)
+            self._save_locked()
             return copy.deepcopy(lobby)
 
     def get(self, lobby_id: str) -> dict | None:
@@ -172,13 +245,16 @@ class DiscoveryLobby:
 
     def join(self, account: str, lobby_id: str, member: Any) -> dict | None:
         """加入大厅：把成员填进空槽（或追加），幂等。返回更新后的大厅；失败返回 None。"""
-        member_id = _member_id_from(member) or account
+        explicit_id = _member_id_from(member)
         with self._lock:
             self._expire_locked()
             entry = self._find_locked((lobby_id or "").strip())
             if entry is None:
                 return None
             lobby = entry["body"]
+            info = self._accounts.get(account) or {}
+            # 请求体通常是 null：优先用「它自己 PUT 大厅时暴露的真实 accountId」
+            member_id = explicit_id or str(info.get("real_id") or "") or account
             players = lobby.get("players")
             if not isinstance(players, list):
                 players = []
@@ -191,22 +267,26 @@ class DiscoveryLobby:
             if member_id in members:                     # 幂等：已在厅里
                 entry["updated"] = self._now()
                 self._touch_locked(account)
+                _sync_member_count_locked(lobby)
+                self._save_locked()
                 return copy.deepcopy(lobby)
             if len(members) >= self._max_members:
                 self._stats["join_rejected"] += 1
                 return None
             slot = _empty_slot(players)
             if slot is not None:
-                slot["memberAccountId"] = member_id
-                if "hasInfo" in slot:
-                    slot["hasInfo"] = True
+                self._fill_member_locked(slot, account, member_id)
             else:
-                players.append({"memberAccountId": member_id, "isHost": False, "hasInfo": True})
+                new_slot: dict = {"memberAccountId": "", "isHost": False, "hasInfo": True}
+                self._fill_member_locked(new_slot, account, member_id)
+                players.append(new_slot)
             if member_id not in ids:
                 ids.append(member_id)
             entry["updated"] = self._now()
             self._touch_locked(account)
             self._stats["join"] += 1
+            _sync_member_count_locked(lobby)
+            self._save_locked()
             return copy.deepcopy(lobby)
 
     def accounts(self, account: str = "") -> dict:
@@ -229,21 +309,31 @@ class DiscoveryLobby:
             self._expire_locked()
             info = self._accounts.get(account)
             if info and info.get("lobby_id"):
-                self._lobbies.pop(info["lobby_id"], None)
+                lobby_id = info["lobby_id"]
+                if self._lobbies.pop(lobby_id, None) is not None:
+                    self._remember_closed_locked(lobby_id, "left")
                 info["lobby_id"] = None
+            # 成员可能以「真实 accountId」写入，两个身份都算自己
+            identities = {account}
+            if info and info.get("real_id"):
+                identities.add(str(info["real_id"]))
             for entry in self._lobbies.values():
                 lobby = entry["body"]
                 players = lobby.get("players")
                 if isinstance(players, list):
                     for p in players:
-                        if isinstance(p, dict) and str(p.get("memberAccountId") or "") == account:
+                        if isinstance(p, dict) and str(p.get("memberAccountId") or "") in identities:
                             p["memberAccountId"] = ""
                             if "hasInfo" in p:
                                 p["hasInfo"] = False
                 ids = lobby.get("memberAccountIds")
-                if isinstance(ids, list) and account in ids:
-                    ids.remove(account)
+                if isinstance(ids, list):
+                    for ident in identities:
+                        if ident in ids:
+                            ids.remove(ident)
+                _sync_member_count_locked(lobby)
             self._stats["leave"] += 1
+            self._save_locked()
 
     # ------------------------------------------------------------------ 过期
     def _expire_locked(self) -> None:
@@ -251,7 +341,11 @@ class DiscoveryLobby:
         stale = [lid for lid, e in self._lobbies.items() if now - e["updated"] > self._ttl]
         for lid in stale:
             self._lobbies.pop(lid, None)
+            self._remember_closed_locked(lid, "expired")
             self._stats["expired"] += 1
+        for lid, tb in list(self._tombstones.items()):
+            if now - tb["closed_at"] > self._tombstone_ttl:
+                self._tombstones.pop(lid, None)
         stale_accounts = [a for a, i in self._accounts.items()
                           if now - i["last_seen"] > self._ttl and i.get("lobby_id") is None]
         for a in stale_accounts:
@@ -266,12 +360,165 @@ class DiscoveryLobby:
                 if info.get("lobby_id") and info["lobby_id"] not in self._lobbies:
                     info["lobby_id"] = None
 
+    # ------------------------------------------------------------------ 终态 / 持久化
+    def _remember_closed_locked(self, lobby_id: str, reason: str) -> None:
+        """把一个已消失的大厅记成 tombstone（客户端据此拿到终态而不是空对象）。"""
+        if not lobby_id:
+            return
+        self._tombstones[lobby_id] = {
+            "lobby_id": lobby_id, "closed_at": self._now(), "reason": str(reason)}
+        self._stats["closed"] += 1
+
+    def _tombstone_for_locked(self, key: str) -> dict | None:
+        if not key:
+            return None
+        hit = self._tombstones.get(key)
+        if hit is not None:
+            return hit
+        for stored_id, entry in self._tombstones.items():
+            short = stored_id.split(".")[0]
+            if stored_id.startswith(key) or key.startswith(short) or short.startswith(key):
+                return entry
+        return None
+
+    def resolve(self, lobby_id: str) -> dict:
+        """三态解析：{"kind": "live"|"closed"|"unknown", ...}。
+
+        handler 用它区分「厅还在」（返回 body）、「厅已关闭」（返回终态）与
+        「从未见过这个 id」（同样按终态处理，不再回 `{}`）。
+        """
+        key = (lobby_id or "").strip()
+        with self._lock:
+            self._expire_locked()
+            hit = self._find_locked(key) if key else None
+            if hit is not None:
+                self._stats["get"] += 1
+                self._stats["get_hit"] += 1
+                return {"kind": "live", "lobby": copy.deepcopy(hit["body"]),
+                        "lobby_id": str(hit["body"].get("lobbyId") or key)}
+            tb = self._tombstone_for_locked(key)
+            if tb is not None:
+                self._stats["closed_hit"] += 1
+                return {"kind": "closed", "lobby_id": tb["lobby_id"],
+                        "reason": tb["reason"], "closed_at": tb["closed_at"]}
+            return {"kind": "unknown", "lobby_id": key}
+
+    def _clean_marker(self) -> Path | None:
+        if self._persist_path is None:
+            return None
+        return self._persist_path.with_name(self._persist_path.name + ".clean")
+
+    def _snapshot_locked(self) -> dict:
+        now = self._now()
+
+        def age(ts: float) -> float:
+            return max(0.0, now - float(ts))
+
+        return {
+            "version": STATE_VERSION,
+            "generation": self._generation,
+            "seq": self._seq,
+            "accounts": {
+                a: {"ip": i.get("ip", ""), "instance_id": i.get("instance_id", ""),
+                    "real_id": i.get("real_id"), "profile": i.get("profile"),
+                    "lobby_id": i.get("lobby_id"), "age": age(i.get("last_seen", now))}
+                for a, i in self._accounts.items()
+            },
+            "lobbies": {
+                lid: {"owner": e["owner"], "body": e["body"], "age": age(e["updated"])}
+                for lid, e in self._lobbies.items()
+            },
+            "tombstones": {
+                lid: {"reason": t["reason"], "age": age(t["closed_at"])}
+                for lid, t in self._tombstones.items()
+            },
+        }
+
+    def _save_locked(self) -> None:
+        """原子落盘（变更即写）。落盘失败不打断服务，只记一次统计。"""
+        if self._persist_path is None:
+            return
+        try:
+            self._persist_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._persist_path.with_name(self._persist_path.name + ".tmp")
+            tmp.write_text(json.dumps(self._snapshot_locked(), ensure_ascii=False),
+                           encoding="utf-8")
+            os.replace(tmp, self._persist_path)
+            marker = self._clean_marker()
+            if marker is not None and marker.exists():
+                marker.unlink()          # 运行期没有"干净退出"标记
+        except Exception:  # noqa: BLE001
+            self._stats["persist_error"] = self._stats.get("persist_error", 0) + 1
+
+    def _restore(self) -> None:
+        """启动时恢复状态；上一代**非干净退出**则把所有厅转成 server_reset tombstone。"""
+        if self._persist_path is None:
+            return
+        snap = None
+        if self._persist_path.exists():
+            try:
+                snap = json.loads(self._persist_path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                snap = None
+        marker = self._clean_marker()
+        clean = bool(marker is not None and marker.exists())
+        now = self._now()
+        if isinstance(snap, dict) and snap.get("version") == STATE_VERSION:
+            self._seq = int(snap.get("seq") or 0)
+            for acc, info in (snap.get("accounts") or {}).items():
+                if not isinstance(info, dict):
+                    continue
+                self._accounts[acc] = {
+                    "ip": info.get("ip", ""), "instance_id": info.get("instance_id", ""),
+                    "real_id": info.get("real_id"), "profile": info.get("profile"),
+                    "lobby_id": info.get("lobby_id"),
+                    "last_seen": now - float(info.get("age") or 0.0)}
+                if info.get("ip"):
+                    self._by_ip[info["ip"]] = acc
+            for lid, entry in (snap.get("lobbies") or {}).items():
+                if not isinstance(entry, dict) or not isinstance(entry.get("body"), dict):
+                    continue
+                self._lobbies[lid] = {"body": entry["body"], "owner": entry.get("owner", ""),
+                                      "updated": now - float(entry.get("age") or 0.0)}
+            for lid, tb in (snap.get("tombstones") or {}).items():
+                if isinstance(tb, dict):
+                    self._tombstones[lid] = {
+                        "lobby_id": lid, "reason": tb.get("reason", "expired"),
+                        "closed_at": now - float(tb.get("age") or 0.0)}
+            self._generation = int(snap.get("generation") or 0)
+            if not clean:
+                # 非干净退出：状态不可信，全部按 "服务端重置" 关闭，让客户端拿到终态
+                self._generation += 1
+                for lid in list(self._lobbies):
+                    self._lobbies.pop(lid, None)
+                    self._remember_closed_locked(lid, "server_reset")
+                for info in self._accounts.values():
+                    info["lobby_id"] = None
+        if marker is not None and marker.exists():
+            marker.unlink()
+        self._save_locked()
+
+    def close(self) -> None:
+        """优雅退出：落盘并写 `.clean` 标记（下次启动据此沿用旧状态）。"""
+        with self._lock:
+            self._expire_locked()
+            self._save_locked()
+            marker = self._clean_marker()
+            if marker is not None:
+                try:
+                    marker.write_text(time.strftime("%Y-%m-%dT%H:%M:%S"), encoding="utf-8")
+                except Exception:  # noqa: BLE001
+                    pass
+
     # ------------------------------------------------------------------ 诊断
     def stats(self) -> dict:
         with self._lock:
             out = dict(self._stats)
             out["accounts"] = len(self._accounts)
             out["lobbies"] = len(self._lobbies)
+            out["tombstones"] = len(self._tombstones)
+            out["generation"] = self._generation
+            out["persist"] = bool(self._persist_path)
             return out
 
     def dump(self) -> dict:
@@ -281,10 +528,55 @@ class DiscoveryLobby:
                 "accounts": {a: {"ip": i.get("ip", ""), "lobby_id": i.get("lobby_id")}
                              for a, i in self._accounts.items()},
                 "lobbies": {lid: e["body"].get("lobbyId", lid) for lid, e in self._lobbies.items()},
+                "tombstones": {lid: t["reason"] for lid, t in self._tombstones.items()},
+                "generation": self._generation,
             }
 
 
 # ---------------------------------------------------------------------- 工具
+def _looks_like_account(mid: str) -> bool:
+    """真实 accountId 形状：全数字且足够长（客户端按 64 位整数解析，见 0xC0000005 事故）。"""
+    return bool(mid) and len(mid) >= 15 and mid.isdigit()
+
+
+def _sync_member_count_locked(lobby: dict) -> None:
+    """按 players[] 里真实成员数刷新 numLobbyMembers（客户端用它对账厅内人数）。"""
+    players = lobby.get("players")
+    if not isinstance(players, list):
+        return
+    count = 0
+    for p in players:
+        if isinstance(p, dict) and _looks_like_account(str(p.get("memberAccountId") or "")):
+            count += 1
+    lobby["numLobbyMembers"] = count
+
+
+def _merge_member_ids(lobby: dict, member_ids: list[str], owner: str) -> None:
+    """把「已在厅里、但这版 body 没提到」的成员补回空槽（owner 周期 PUT 不能抹掉已加入成员）。"""
+    players = lobby.get("players")
+    if not isinstance(players, list):
+        return
+    present = _member_ids(lobby)
+    ids = lobby.get("memberAccountIds")
+    if not isinstance(ids, list):
+        ids = []
+        lobby["memberAccountIds"] = ids
+    for mid in member_ids:
+        if not _looks_like_account(mid) or mid == owner or mid in present:
+            continue
+        slot = _empty_slot(players)
+        if slot is None:
+            slot = {"memberAccountId": "", "isHost": False, "hasInfo": True}
+            players.append(slot)
+        slot["memberAccountId"] = mid
+        slot["isHost"] = False
+        if "hasInfo" in slot:
+            slot["hasInfo"] = True
+        if mid not in ids:
+            ids.append(mid)
+        present.append(mid)
+
+
 def _member_ids(lobby: dict) -> list[str]:
     """大厅里的成员账号（以 players[].memberAccountId 为准，memberAccountIds 兜底）。"""
     out: list[str] = []

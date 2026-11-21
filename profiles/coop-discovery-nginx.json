@@ -22,14 +22,22 @@
   },
   "lobby": {
     "mode": "discovery",
-    "echo_put": false,
+    "echo_put": true,
     "ttl_seconds": 600,
-    "max_members": 4
+    "max_members": 4,
+    "unknown_lobby": "closed",
+    "persist": "state/discovery-state.json",
+    "tombstone_ttl_seconds": 1800
   },
   "body_shapes": {
     "enabled": true,
     "dir": "state/evidence/stage2",
-    "paths": ["/api/Account/Login", "/api/lobby", "/api/lobby/*/member", "/api/lobby/accounts"]
+    "paths": [
+      "/api/Account/Login",
+      "/api/lobby",
+      "/api/lobby/*/member",
+      "/api/lobby/accounts"
+    ]
   },
   "mission": {
     "keep_template_outcome": false

@@ -24,3 +24,8 @@ else
   echo "== discovery 探针（用显式账号头，不依赖 IP） =="
   "$APP/venv/bin/python" "$APP/tools/discovery_probe.py" --url "https://127.0.0.1:443" --insecure 2>&1 | tail -14
 fi
+
+if [ "${DRILL:-0}" = "1" ]; then
+  echo "== 重启演练（DRILL=1） =="
+  bash "$APP/restart_drill.sh" "$DOMAIN" || exit 1
+fi

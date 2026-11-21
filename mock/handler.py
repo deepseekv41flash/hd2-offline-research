@@ -83,6 +83,17 @@ def parse_json_body(body: bytes) -> Any:
         return None
 
 
+def _closed_lobby_body(res: dict) -> dict:
+    """未知/已关闭大厅的终态 body（⚠ 字段取值待真实客户端校准，见设计档 §5）。"""
+    return {
+        "lobbyId": str(res.get("lobby_id") or ""),
+        "players": [],
+        "memberAccountIds": [],
+        "numLobbyMembers": 0,
+        "state": 0,
+    }
+
+
 class MockHandler:
     """把一个抓包快照变成「本地云端」。"""
 
@@ -110,6 +121,10 @@ class MockHandler:
             discovery.DiscoveryLobby(
                 ttl_seconds=float(lobby_cfg.get("ttl_seconds", discovery.DEFAULT_TTL_SECONDS)),
                 max_members=int(lobby_cfg.get("max_members", discovery.DEFAULT_MAX_MEMBERS)),
+                persist_path=lobby_cfg.get("persist") or None,
+                tombstone_ttl_seconds=float(
+                    lobby_cfg.get("tombstone_ttl_seconds",
+                                  discovery.DEFAULT_TOMBSTONE_TTL_SECONDS)),
             )
             if lobby_cfg.get("mode") == "discovery" else None
         )
@@ -244,9 +259,14 @@ class MockHandler:
                     disc.clear(account)
                     return self._json({}, source="discovery:lobby_clear")
                 if name == "lobby_get":
-                    lobby = disc.get(str(params.get("lobby_id", "")))
-                    if lobby is not None:
-                        return self._json(lobby, source="discovery:lobby_get")
+                    policy = str((self.profile.get("lobby") or {}).get("unknown_lobby", "empty"))
+                    res = disc.resolve(str(params.get("lobby_id", "")))
+                    if res["kind"] == "live":
+                        return self._json(res["lobby"], source="discovery:lobby_get")
+                    if policy == "closed":
+                        # 终态回答：让客户端知道"厅已经没了"，而不是空对象（它会把空对象当加载中）
+                        return self._json(_closed_lobby_body(res),
+                                          source=f"discovery:lobby_get:closed:{res.get('reason', '')}")
                     return self._json({}, source="discovery:lobby_get:unknown")
                 if name == "lobby_member":
                     lobby = disc.join(account, str(params.get("lobby_id", "")), payload)

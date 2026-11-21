@@ -172,11 +172,27 @@ def cmd_serve(args) -> int:
     print(f"[serve] TLS 自检: {json.dumps(probe, ensure_ascii=False)}")
     print(f"[serve] data={data_dir}  host={host}:{port}  crl={'127.0.0.1:' + str(crl_port)}")
     print("[serve] Ctrl+C 停止；实验结束记得还原 hosts（hd2proxy.exe install 或手改）")
+    import signal
+
+    def _graceful(signum, frame):  # noqa: ARG001
+        raise KeyboardInterrupt
+
+    try:
+        signal.signal(signal.SIGTERM, _graceful)
+        signal.signal(signal.SIGINT, _graceful)
+    except (ValueError, OSError):
+        pass
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        print("\n[serve] 收到 Ctrl+C")
+        print("\n[serve] 收到停止信号（优雅退出）")
     finally:
+        try:
+            if handler.discovery is not None:
+                handler.discovery.close()
+                print("[serve] 发现层状态已落盘（写入 clean 标记）")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[serve] 发现层落盘失败: {exc!r}")
         srv.stop()
     return 0
 

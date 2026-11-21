@@ -214,3 +214,90 @@ def test_handler_unknown_lobby_returns_empty_object(synthetic_capture: Path):
     h = _handler(synthetic_capture)
     r = h.handle("GET", "/api/lobby/no-such-lobby", b"", client_addr="10.0.0.7")
     assert r.status == 200 and r.json() == {}
+
+
+# ---------------------------------------------------------------- 账号 ID 形状
+def test_account_id_is_20_digit_numeric():
+    """账号 ID 必须是 20 位纯数字：客户端把玩家 accountId 按 64 位整数解析，
+    非数字（早期 "acct-000001"）会让 game.dll 崩溃（2026-11-21 21:46 实测取证）。"""
+    svc = DiscoveryLobby()
+    account = svc.login(client_addr="10.0.0.1")
+    aid = svc.account_for(client_addr="10.0.0.1")
+    assert aid is not None
+    assert aid.isdigit() and len(aid) == 20, f"非 20 位纯数字: {aid!r}"
+    assert aid.startswith("7656119")
+
+
+# ---------------------------------------------------------------- 真实 accountId 学习（E2 现场修复）
+REAL_HOST_ID = "2231864975069446623"      # 房主客户端自己的真实 accountId（非本服务合成）
+REAL_JOINER_ID = "13887067702231565058"   # 加入方客户端自己的真实 accountId
+
+
+def _host_lobby(real_id: str, name: str) -> dict:
+    return _lobby(
+        players=[
+            {"slot": 0, "memberAccountId": real_id, "isHost": True, "hasInfo": True,
+             "playerName": name, "playerRank": 199, "experience": 2759938, "commendRank": 0},
+            {"slot": 1, "memberAccountId": "", "isHost": False, "hasInfo": False},
+        ],
+        numLobbyMembers=1,
+    )
+
+
+def test_join_uses_identity_learned_from_own_lobby_put():
+    """`/member` 请求体是 null（E2 实测）：加入方身份要取它自己 PUT 大厅时暴露的真实 accountId。
+
+    否则返回 body 里写的是合成 `7656119…`，加入方客户端看到「厅里不是我」→ 每 ~90 s 重试。
+    """
+    svc, _ = _service()
+    acc_host = svc.account_for(client_addr="10.0.0.1")
+    acc_join = svc.account_for(client_addr="10.0.0.2")
+    svc.put(acc_host, _host_lobby(REAL_HOST_ID, "Fanna_"))
+    svc.put(acc_join, _lobby(
+        lobbyId="22222222-3333-4444-8555-666666666666.r-00000002",
+        players=[{"slot": 0, "memberAccountId": REAL_JOINER_ID, "isHost": True,
+                  "hasInfo": True, "playerName": "CAS MONSTER", "playerRank": 42}],
+        numLobbyMembers=1,
+    ))
+
+    joined = svc.join(acc_join, LOBBY_ID, None)
+    assert joined is not None
+    ids = [p["memberAccountId"] for p in joined["players"] if p.get("memberAccountId")]
+    assert REAL_JOINER_ID in ids, f"加入方真实 ID 未写入: {ids}"
+    assert acc_join not in ids, f"合成的 7656119… 不应出现在厅里: {ids}"
+    assert joined["numLobbyMembers"] == 2
+    slot = next(p for p in joined["players"] if p.get("memberAccountId") == REAL_JOINER_ID)
+    assert slot["playerName"] == "CAS MONSTER" and slot["hasInfo"] is True
+
+
+def test_join_falls_back_to_synthetic_id_when_no_identity_learned():
+    """加入方从未建过厅（服务端没学到真实 ID）时，退回合成账号 ID —— 不崩、不丢成员。"""
+    svc, _ = _service()
+    acc_host = svc.account_for(client_addr="10.0.0.1")
+    acc_join = svc.account_for(client_addr="10.0.0.2")
+    svc.put(acc_host, _host_lobby(REAL_HOST_ID, "Fanna_"))
+
+    joined = svc.join(acc_join, LOBBY_ID, None)
+    assert joined is not None
+    ids = [p["memberAccountId"] for p in joined["players"] if p.get("memberAccountId")]
+    assert acc_join in ids and REAL_HOST_ID in ids
+    assert joined["numLobbyMembers"] == 2
+
+
+def test_owner_reput_does_not_wipe_joined_members():
+    """owner 客户端周期重发自己那份（还没看到新成员）的 lobby body 时，已加入成员不能被抹掉。
+
+    2026-11-21 E2 实测：join 成功后 owner 的下一次 PUT 把 players 覆盖回「只有自己」，
+    加入方永远看不到自己在厅里 → 卡加载 + 每 90 s 重试。
+    """
+    svc, _ = _service()
+    acc_host = svc.account_for(client_addr="10.0.0.1")
+    acc_join = svc.account_for(client_addr="10.0.0.2")
+    svc.put(acc_host, _host_lobby(REAL_HOST_ID, "Fanna_"))
+    svc.join(acc_join, LOBBY_ID, None)
+
+    svc.put(acc_host, _host_lobby(REAL_HOST_ID, "Fanna_"))     # owner 用旧 body 重发
+    got = svc.get(LOBBY_ID)
+    ids = [p["memberAccountId"] for p in got["players"] if p.get("memberAccountId")]
+    assert acc_join in ids, f"owner 重发 PUT 抹掉了成员: {ids}"
+    assert got["numLobbyMembers"] == 2
