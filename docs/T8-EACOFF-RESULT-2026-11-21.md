@@ -79,3 +79,20 @@ Peer registration failed, %s
 
 未修改游戏目录、未改 hosts、未改回环/代理设置；研究 CA 装/卸由 `mockctl cert-install|uninstall` 管理；
 EAC 启动器日志写入 `%APPDATA%\EasyAntiCheat\…`（系统行为，非本工具产生）。
+
+## 7. 追加（2026-11-21 15:2x）：Steam 启动项层的对照，结论不变但理由更硬
+
+用新工具 [`tools/steam_appinfo.py`](../tools/steam_appinfo.py) 直接读 Steam 官方 appinfo 分片，
+把「HD2 有没有别的启动方式」从「字符串里没搜到开关」升级为「**逐条启动项都没有可用替代品**」：
+
+- HD2（appid 553850，`appinfo_f6.vdf`）的 6 条启动项里，非 EAC 的 3 条
+  （option 7/8/9）分别指向 `bin\dev\stingray_win64_dev.exe`、`bin\release\stingray_win64_release.exe`、
+  `bin\profile\stingray_win64_profile.exe` —— **零售包中这三个路径/文件都不存在**（`bin\` 下无 `release|dev|profile`，
+  全盘也无 `stingray_win64*`），属引擎开发配置残留；其余 3 条全是 `start_protected_game.exe`。
+- 同宿主机对照游戏 Broken Arrow（appid 1604270）则有一条**官方直启游戏本体**的启动项
+  （`Anti-Cheat Disabled` → `BrokenArrow.exe`，无参数），且其客户端代码里有 `NoAntiCheat` 空实现 +
+  `BlockReason.NoAntiCheat` + `ProtectedLobbyTypes` 的降级设计 —— 这才是它能「关 EAC 运行」的原因。
+
+⇒ 本节把 §0 的 ✗ 否证补上「差在哪一层」：**L1 零售包无可执行替代目标 + L2 游戏代码无降级分支**。
+完整对照（含证据表、复现命令、三态判定）见 [T8b-BA-EACOFF-MECHANISM-2026-11-21.md](T8b-BA-EACOFF-MECHANISM-2026-11-21.md)。
+
