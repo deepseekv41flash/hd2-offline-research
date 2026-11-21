@@ -55,6 +55,43 @@ EOS = 身份/配置/反作弊（EAC）/遥测；Sony CRS = 崩溃诊断上报；
 
 **UA**：`EOS-SDK/1.19.1.2-53289219 (Windows…`、`EOSSDK/++EOSSDK+Release-1.19.1.2`。
 
+### 2.2.1 EAC 反作弊通道到底在传什么（从 `state/evidence/t6/mitm*.jsonl` 复算，✓✓）
+
+用户问「EAC 服务的连接是只检查更新，还是传别的数据」。用两次 T6a 记录的原始 jsonl 复算（run1 窗口 156 s，45 条记录；
+run2 窗口 78 s，34 条）。EOS/EAC 侧实际是**三条完全不同的通道**：
+
+| 通道 | 端点 | 频次 | 体量 | 性质 |
+|---|---|---|---|---|
+| **① 会话主通道** | `POST /anticheat/v8/games/client/message/`（`application/octet-stream`） | 启动后 **每 ~12 s 一条**，节奏 5–30 s 不等，**持续整局** | 请求 **388 B–33,472 B**；响应 **1,289–9,634 B**；run1 共 13 条 = 请求 114.7 KB + 响应 49.8 KB | **双向会话**：上行客户端证明/完整性/事件上报，下行服务端下发指令/配置/状态（内容加密不可读） |
+| **② 服务状态** | `GET /anticheat/v6/service/status/` | **每 ~60 s** 一次 | 响应固定 **682 B JSON**，请求 0 B | "反作弊服务此刻是否可用/维护"查询 |
+| **③ 模块下发（唯一的"更新/下载"）** | `modules-cdn.eac-prod.on.epicgames.com`（CloudFront） | **启动时按需**，已缓存则不发生 | 模块本体（本次窗口未触发） | EAC 模块下载/校验，见 [T4](T4-RUNTIME-EGRESS-2026-11-21.md) |
+
+同一窗口里 **EOS 侧其它流量**（同 host `api.epicgames.dev`）对比：
+
+| 类别 | 条数 | 请求 B | 响应 B |
+|---|---|---|---|
+| anticheat（①+②） | 16 | **114,684** | **49,760** |
+| telemetry（`/telemetry/data/...`，批量事件） | 6 | 24,206 | 4,033 |
+| sdk 配置（`/sdk/v1/...`，gzip 7.9 KB，含 `AntiCheat.GameplayData.Url`） | 2 | 0 | 15,802 |
+| auth（`/auth/v1/oauth/token`） | 2 | 837 | 4,797 |
+| notifications（WebSocket 101） | 1 | 0 | 700 |
+
+⇒ **反作弊通道占该窗口 EOS 侧字节的 ~77%**（164.4 KB / 214.8 KB），换算约 **1.05 KB/s（≈8.4 kbps）**，
+即整局 ~6 MB/小时量级。而 PlayFab 侧同期只有 ~40 KB；Sony CRS 1.1 KB。
+
+**结论**：
+
+1. **不是"只检查更新"**。更新/下载只有 ③（且已缓存时启动根本不下载）；② 是服务状态轮询；
+   真正占大头的是 ① 的**持续双向会话**——与游戏内 `EOS_AntiCheatClient_*` API 面（BeginSession/EndSession、
+   消息保护、peer 注册、`OnIntegrityViolated` 回调、`AddNotify*` 通知）一一对应，属于"会话 + 完整性 + 上报"。
+2. **内容不可解**：`application/octet-stream` 是 TLS 之内再套 EAC 自己的加密/签名，TLS MITM 只能拿到长度与节奏。
+   所以上表的"用途"是**协议形状 + API 面 + 公开资料**的推断，不是解密结果；能确定的是频次/大小/双向性/启动必需性。
+3. **启动必需**：[T7](T7-STAGE1-NECESSITY-2026-11-21.md) R2/R6 证明断开或伪 `200 {}` → EAC 弹
+   「无法连接反作弊网络，游戏将退出」⇒ ① 的会话建立不是可选的遥测，而是进游戏的硬前提。
+4. **未证边界**：EAC 独立服务进程 `EasyAntiCheat_EOS.exe` 不读 IE 代理设置，本工具 MITM 覆盖不到它的连接；
+   T4 整机抓包只到主机级（`modules-cdn`），无进程级归属 ⇒「服务进程自己还传了什么」= `⚠ 未证`。
+
+
 ### 2.3 `crs.api.wwsga.me` —— **Sony 崩溃/诊断上报**（1 条请求，✓✓）
 
 `POST /games/<uuid>/telemetry` → **400**（缺有效 game 上下文），但请求 schema 完整暴露了它上报什么：
