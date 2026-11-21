@@ -144,7 +144,9 @@ class MitmProxy:
     def __init__(self, *, host: str, port: int, intercept: set[str],
                  chain_proxy: tuple[str, int] | None, cert_dir: Path,
                  log_path: Path, capture: bool = True, upstream_cafile: Path | None = None,
-                 mock_hosts: set[str] | None = None, mock_ca: Path | None = None):
+                 mock_hosts: set[str] | None = None, mock_ca: Path | None = None,
+                 blackhole_hosts: set[str] | None = None,
+                 fake_hosts: set[str] | None = None):
         self.host = host
         self.port = port
         self.intercept = {h.lower() for h in intercept}
@@ -155,6 +157,8 @@ class MitmProxy:
         self.upstream_cafile = Path(upstream_cafile) if upstream_cafile else None
         self.mock_hosts = {h.lower() for h in (mock_hosts or set())}
         self.mock_ca = Path(mock_ca) if mock_ca else None
+        self.blackhole_hosts = {h.lower() for h in (blackhole_hosts or set())}
+        self.fake_hosts = {h.lower() for h in (fake_hosts or set())}
         self._lock = threading.Lock()
         self.stats = {"connect": 0, "intercepted": 0, "chained": 0, "requests": 0,
                       "bytes_in": 0, "bytes_out": 0, "tls_fail": 0}
@@ -242,7 +246,13 @@ class MitmProxy:
             port = int(port_s or 443)
             with self._lock:
                 self.stats["connect"] += 1
-            if host.lower() in self.intercept:
+            if host.lower() in self.blackhole_hosts:
+                with self._lock:
+                    self.stats["blackholed"] = self.stats.get("blackholed", 0) + 1
+                client.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                self._log({"host": host, "event": "blackholed"})
+                return
+            if host.lower() in self.intercept or host.lower() in self.fake_hosts:
                 with self._lock:
                     self.stats["intercepted"] += 1
                 client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -325,6 +335,25 @@ class MitmProxy:
             try:
                 _req_raw, req_body = _read_body(tls, headers, buf)
             except HttpError:
+                return
+            if host.lower() in self.fake_hosts:
+                # T7 "fake-200"：模拟本地私服把所有请求都应成 200 {}（不连上游）
+                resp_raw = (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                            b"Content-Length: 2\r\nConnection: close\r\n\r\n{}")
+                try:
+                    tls.sendall(resp_raw)
+                except OSError:
+                    return
+                with self._lock:
+                    self.stats["requests"] += 1
+                self._log({
+                    "host": host, "method": method, "path": path,
+                    "ua": headers.get("user-agent"),
+                    "req_len": len(req_body), "_req_body": req_body,
+                    "status": 200, "resp_len": len(resp_raw),
+                    "resp_ctype": "application/json", "_resp_body": b"{}",
+                    "fake": True,
+                })
                 return
             res = self._forward(host, port, _strip_proxy_headers(head), req_body)
             if res is None:
@@ -418,6 +447,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--mock-hosts", default="",
                    help="逗号分隔：这些域名转发到本机 mock，上游用 --mock-ca 校验")
     p.add_argument("--mock-ca", type=Path, default=Path("state/certs/ca.pem"))
+    p.add_argument("--blackhole-hosts", default="",
+                   help="逗号分隔：这些域名的 CONNECT 直接 502（模拟不可达）")
+    p.add_argument("--fake-hosts", default="",
+                   help="逗号分隔：这些域名一律回 200 {}（模拟本地私服）")
     p.add_argument("--log", type=Path, default=Path("state/evidence/t6/mitm.jsonl"))
     args = p.parse_args(argv)
     proxy = MitmProxy(
@@ -426,7 +459,9 @@ def main(argv: list[str] | None = None) -> int:
         chain_proxy=None if args.no_chain else args.chain_proxy,
         cert_dir=args.cert_dir, log_path=args.log, upstream_cafile=args.upstream_ca,
         mock_hosts={h.strip() for h in args.mock_hosts.split(",") if h.strip()},
-        mock_ca=args.mock_ca)
+        mock_ca=args.mock_ca,
+        blackhole_hosts={h.strip() for h in args.blackhole_hosts.split(",") if h.strip()},
+        fake_hosts={h.strip() for h in args.fake_hosts.split(",") if h.strip()})
     try:
         proxy.serve_forever()
     except KeyboardInterrupt:

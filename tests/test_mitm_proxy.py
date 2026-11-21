@@ -8,12 +8,23 @@ import json
 import socket
 import ssl
 import threading
+import time
 from pathlib import Path
 
 from mock import certs
 from tools.mitm_proxy import MitmProxy
 
 SECRET = "SECRET_TICKET_VALUE_0123456789"
+
+
+def _wait_log(path: Path, timeout: float = 3.0) -> str:
+    """等日志落盘（代理在另一个线程写文件，直接读会有竞态）。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if path.exists() and path.read_text(encoding="utf-8").strip():
+            return path.read_text(encoding="utf-8")
+        time.sleep(0.05)
+    return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
 def _origin_server(cert_dir: Path):
@@ -81,7 +92,7 @@ def test_mitm_intercepts_and_logs_only_schema(tmp_path: Path):
         assert b"200" in resp.split(b"\r\n")[0]
         assert SECRET.encode() in resp            # 明文确实穿过代理回到客户端
 
-        recs = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l.strip()]
+        recs = [json.loads(l) for l in _wait_log(log).splitlines() if l.strip()]
         assert len(recs) == 1
         rec = recs[0]
         assert rec["host"] == "localhost"
@@ -91,7 +102,7 @@ def test_mitm_intercepts_and_logs_only_schema(tmp_path: Path):
         # 响应 JSON 被解析成结构，字符串只有 len/class/sha8 —— 绝不落原值
         keys = rec["resp"]["json"]["keys"]
         assert keys == ["ok", "token", "n"]
-        assert SECRET not in log.read_text(encoding="utf-8")
+        assert SECRET not in _wait_log(log)
         assert proxy.stats["requests"] == 1
     finally:
         proxy.stop()
@@ -156,10 +167,70 @@ def test_mitm_decompresses_gzip_response_for_schema(tmp_path: Path):
             out += chunk
         tls.close()
         assert b"200" in out.split(b"\r\n")[0]
-        rec = json.loads(log.read_text(encoding="utf-8").strip())
+        rec = json.loads(_wait_log(log).strip())
         assert rec["resp"]["format"] == "json"
         assert rec["resp"]["json"]["keys"] == ["ok", "token", "n"]
-        assert SECRET not in log.read_text(encoding="utf-8")
+        assert SECRET not in _wait_log(log)
     finally:
         proxy.stop()
         origin.shutdown()
+
+
+def test_mitm_blackhole_returns_502_without_upstream(tmp_path: Path):
+    """T7：黑洞模式 = 模拟该域名不可达（CONNECT 直接 502，不连上游）。"""
+    cert_dir = tmp_path / "certs"
+    certs.generate(cert_dir, hosts=["localhost"], crl_port=18099)
+    log = tmp_path / "mitm.jsonl"
+    proxy = MitmProxy(host="127.0.0.1", port=0, intercept=set(), chain_proxy=None,
+                      cert_dir=cert_dir, log_path=log,
+                      blackhole_hosts={"localhost"})
+    proxy.start()
+    threading.Thread(target=proxy.serve_forever, daemon=True).start()
+    try:
+        raw = socket.create_connection(("127.0.0.1", proxy.bound_port), timeout=5)
+        raw.sendall(b"CONNECT localhost:443 HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        resp = b""
+        while b"\r\n\r\n" not in resp:
+            resp += raw.recv(4096)
+        assert b"502" in resp.split(b"\r\n")[0]
+        raw.close()
+        assert proxy.stats["blackholed"] == 1
+        assert "blackholed" in _wait_log(log)
+    finally:
+        proxy.stop()
+
+
+def test_mitm_fake_200_answers_locally(tmp_path: Path):
+    """T7：fake-200 模式 = 模拟本地私服，所有请求回 200 {}，不碰上游。"""
+    cert_dir = tmp_path / "certs"
+    certs.generate(cert_dir, hosts=["localhost"], crl_port=18099)
+    log = tmp_path / "mitm.jsonl"
+    proxy = MitmProxy(host="127.0.0.1", port=0, intercept=set(), chain_proxy=None,
+                      cert_dir=cert_dir, log_path=log, fake_hosts={"localhost"})
+    proxy.start()
+    threading.Thread(target=proxy.serve_forever, daemon=True).start()
+    try:
+        raw = socket.create_connection(("127.0.0.1", proxy.bound_port), timeout=5)
+        raw.sendall(b"CONNECT localhost:443 HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        head = b""
+        while b"\r\n\r\n" not in head:
+            head += raw.recv(4096)
+        assert b"200" in head.split(b"\r\n")[0]
+        ctx = ssl.create_default_context(cafile=str(cert_dir / "ca.pem"))
+        tls = ctx.wrap_socket(raw, server_hostname="localhost")
+        tls.sendall(b"POST /Lobby/CreateLobby HTTP/1.1\r\nHost: localhost\r\n"
+                    b"Content-Length: 2\r\nConnection: close\r\n\r\n{}")
+        out = b""
+        while True:
+            chunk = tls.recv(65536)
+            if not chunk:
+                break
+            out += chunk
+        tls.close()
+        assert b"200" in out.split(b"\r\n")[0]
+        assert out.rstrip().endswith(b"{}")          # 假响应体
+        rec = json.loads(_wait_log(log).strip())
+        assert rec["fake"] is True and rec["status"] == 200
+        assert rec["path"] == "/Lobby/CreateLobby"
+    finally:
+        proxy.stop()
