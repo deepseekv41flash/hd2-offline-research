@@ -219,3 +219,89 @@ HellForge 给出了另一半答案：**它把 PlayFab 客户端 DLL 整个换掉
 | 该方案不需要逆向 Party 线协议/DTLS | ✓ | 已证（基于 Microsoft 公开 SDK 头实现替身） |
 | 该方案能直接用于当前 build | ⚠ 未证 | 需先确认 Party DLL 版本一致 + 当前 build 的 Party 传输是否混入 EOS P2P |
 | 方案B 的成本量级（≈1.2 万行 + 双机联调 + 跟 build） | ✓ | 已证（代码行数统计） |
+
+## 9. 中继需求与服务器资源评估（用户追问：要不要公网服务器？我们那两台够吗？）
+
+### 9.1 HellForge 不需要自建公网中继：它用的是 Valve 的 Steam 中继网络（✓ 已证）
+
+代码级证据（`src/HellForge.LocalBackend/Multiplayer/SteamPeerTransport.cs`）：
+
+```
+// Backend-to-backend messages through Steam networking (ISteamNetworkingMessages over Valve's relays, peers named by
+// SteamID). Runs in the backend process, which the network block does not list; the copied game itself only talks to
+// loopback.
+...
+((delegate* unmanaged[Cdecl]<nint, void>)E("SteamAPI_ISteamNetworkingUtils_InitRelayNetworkAccess"))(utils);
+```
+
+联机链路是三层，全程没有"官方或自建的公网服务器"：
+
+```
+游戏进程 ──(loopback)──> 本机 HellForge backend ──(Steam SDR: ISteamNetworkingMessages)──> 好友的 backend
+```
+
+- 玩家侧要求（`docs/multiplayer.md`「How co-op works for players」）：Steam 在线、互为 Steam 好友（或开「Play with
+  strangers」），Steam 好友/大厅用的都是**真实的 Steam**；**没有"输入 IP 直连"或"自建中继"开关**（全仓 grep 无 direct-IP/relay-server 选项）。
+- 传输的 NAT 穿透与回落由 Valve 的 SDR 完成（`InitRelayNetworkAccess` 就是初始化这套网络）；中继成本由 Valve 承担，
+  HellForge 作者不运营任何服务器。
+- 它自己只有"host = 某个玩家的 PC"：`docs/multiplayer.md`「The creator's backend owns each lobby」「The host's backend
+  owns each Party network」。
+
+⇒ **结论：HellForge 的形态不需要带公网 IP 的服务器**。需要公网服务器的只有另一种选择：不依赖 Steam、
+自己实现 UDP 中继/自建 Party 替身传输（那是方案B 的变体，HellForge 没走）。
+
+### 9.2 如果换成"自建中继"：负载模型（估算）
+
+中继本身是**极轻**的服务：单进程 UDP 转发，CPU 近似 0（几千包/秒只占一个小核的一小部分），内存 50–150 MB，
+真正约束是**出方向带宽**和**月流量包**：
+
+| 项 | 量级 | 说明 |
+|---|---|---|
+| 每局（4 人，无语音） | **≈0.3–1 Mbps 聚合**（待实测） | 中继对每局的出方向 ≈ 入方向；host 上行 + 各 client 入向汇总后扇出 |
+| 语音（若也走自建中继） | +0.1–0.3 Mbps/局 | 原版 HD2 语音走 PlayFab Party（Azure 中继）；替身方案要自己带 |
+| 每局月流量（若每天 2 h） | ≈15–45 GB/月 | 按 0.5–1 Mbps 连续算 |
+| CPU/内存 | 可忽略 | systemd `MemoryMax=128M` 足够压住 |
+
+### 9.3 两台现成服务器实测（本机 2026-11-21 15:45 只读探测；IP 已脱敏）
+
+| 项 | 服务器 A（腾讯云，2 vCPU） | 服务器 B（阿里云，2 vCPU） |
+|---|---|---|
+| 规格 | Xeon 8255C ×2、**3.7 GB RAM**、59 GB 盘（75% 用） | Xeon Platinum 1C2T、**1.7 GB RAM**、40 GB 盘（67% 用） |
+| 当前负载 | load 0.50 / 0.43 / 0.36（30 天） | load 0.12 / 0.12 / 0.35（38 天） |
+| 可用内存 | **≈0.9 GB**（swap 4 GB 已用 2.7 GB） | **≈0.35 GB**（swap 4 GB 已用 1.7 GB） |
+| 现有业务 | nginx(80/443/888) + mihomo 代理 + 6 个 docker（QQ bot/NAP CAT/sqlite-web 等） | nginx + maim bot 栈（3 个 docker） |
+| 公网 IP | ✓（NAT 映射，内网 10.x） | ✓（NAT 映射，内网 172.30.x） |
+| 本机→服务器延迟 | **avg 69 ms**（56–82） | **avg 55 ms**（51–63） |
+| **出方向吞吐（实测）** | 单流 **4.1 Mbps**；4 并发 **2.2 Mbps** | 单流 **3.3 Mbps**；4 并发 **3.3 Mbps** |
+| UDP 监听 | 无游戏类（仅 nginx QUIC 443、mihomo 1053/7890） | 无（仅 systemd-resolve/chrony） |
+| 测速方法 | `ssh2` exec `cat <已有日志>` 5 s 计字节；再用 4 条并发流复核；本机下行基线另测为 **≈48 Mbps**（6 MB/s，排除本地瓶颈） | 同左 |
+
+判读：
+
+- **都有公网 IP、延迟可接受（55–69 ms），跑得动中继服务**；但**出方向带宽只有约 3–4 Mbps**（并发不叠加，说明是真带宽上限，不是单流限制），
+  按 9.2 的每局 0.5 Mbps 估，A 约 **4–8 局**、B 约 **6–7 局**是带宽理论上限；扣掉现有业务余量，实际只该接 **2–4 局**。
+- **内存是更现实的硬约束**：B 只剩 0.35 GB、swap 已用 1.7 GB；A 剩 0.9 GB、swap 已用 2.7 GB。塞一个 50–100 MB 的
+  中继进程**能跑**，但两台都在 swap 上，抖动会影响中继时延（对游戏很敏感）。
+- **都没开 UDP 入站**：云控制台安全组 + 系统防火墙要额外放行（当前 `ss -lunp` 无任何游戏端口）。
+- 月流量包未知（控制台可见）：3–4 Mbps 常年跑满约 1.2–1.6 TB/月，多数廉价套餐的月流量包会先耗尽。
+
+### 9.4 结论与建议
+
+| 问题 | 结论 |
+|---|---|
+| HellForge 需要公网服务器中继吗？ | **不需要**（Valve Steam SDR 承担中继；只要 Steam 在线 + 好友） |
+| 自建中继负载高吗？ | **算力/内存极低**（一个 UDP 进程即可），**带宽是唯一瓶颈**：每 4 人局约 0.3–1 Mbps |
+| 两台现成服务器够吗？ | **只够"小规模验证"**（2–4 人、1–2 局）：公网 IP ✓、延迟 55–69 ms 可玩、算力有余；但出方向仅 3–4 Mbps、内存已被现有业务吃紧、UDP 未放行 ⇒ **不适合生产** |
+
+给阶段2 的建议（按优先级）：
+
+1. **主方案（保留 PlayFab 云）根本不需要服务器**——先不要为此动这两台机器。
+2. 若要验证「自建联机」可行性，**先按 HellForge 的路子用 Steam SDR**（零服务器、零端口），验证"双机能进同一局"；
+   这一步失败再谈自建中继。
+3. 若确实要走自建中继（例如 CN 玩家要走加速、或非 Steam 好友场景）：优先 **B**（负载 0.12、延迟更低），
+   systemd 限内存 128 MB、限 2–4 房；**先在云控制台确认带宽包/月流量包，并放行 UDP 入站**；A 上已有 nginx+mihomo+6 容器，
+   不建议再压（要压先扩内存或迁容器）。
+4. 中继实现建议：单进程 UDP relay（会话表按 lobby id + SteamID 绑定），端口可固定一个；
+   与"官方服务器"严格隔离（研究仓内保持只读原则，部署另开）。
+
+> 脱敏：本节按公开仓纪律隐去两台服务器的完整公网 IP；测速只用读取已存在的 journal 日志，未改服务器任何文件。
