@@ -129,7 +129,7 @@ privacyMode, race, regionIndex, sosBeacons, startTime, state, territoryId, trans
 ```
 GET /api/Account/Keys?id=10753400516677771412      （00:08:11，就在进入任务前）
 200  115 B
-{"accountKeys":[{"platformAccountId":"10753400516677771412",
+{"accountKeys":[{"platformAccountId":"<房主 accountId 已脱敏>",
                  "key":"kVWP7ESPy71AU7yRxpsd3IZTouQJnVyjfEo4lGHKWQI="}]}
 ```
 
@@ -145,9 +145,9 @@ GET /api/Account/Keys?id=10753400516677771412      （00:08:11，就在进入任
 
 ```
 state/evidence/e2prep/e2-mock-watch.log
-  21:46:21.999 GET /api/Account/Keys?id=2231864975069446623 0B -> 200 2B [fallback]
-  21:58:03.878 GET /api/Account/Keys?id=2231864975069446623 0B -> 200 2B [fallback]
-  22:08:41.893 GET /api/Account/Keys?id=2231864975069446623 0B -> 200 2B [fallback]
+  21:46:21.999 GET /api/Account/Keys?id=2231…6623（志愿者 accountId，已脱敏） 0B -> 200 2B [fallback]
+  21:58:03.878 GET /api/Account/Keys?id=2231…6623（志愿者 accountId，已脱敏） 0B -> 200 2B [fallback]
+  22:08:41.893 GET /api/Account/Keys?id=2231…6623（志愿者 accountId，已脱敏） 0B -> 200 2B [fallback]
   22:25:11.595 GET /api/Account/Keys?id=13887067702231565058 0B -> 200 2B [fallback]
   22:47:17.616 GET /api/Account/Keys?id=13887067702231565058 0B -> 200 2B [fallback]
 ```

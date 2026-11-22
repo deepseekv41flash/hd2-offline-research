@@ -94,7 +94,7 @@ powershell -Command "Get-ChildItem Cert:\CurrentUser\Root | ? { \$_.Thumbprint -
 
 | 时间（+0800） | 来源 | 事实 |
 |---|---|---|
-| 12:38:21–12:40:14 | **志愿者 `183.197.36.254`** | **完整登录跑通**：`Configuration/GameClient` → `Account/Login` 200 → `WarSeason/*`、`Progression/*`、`FriendsV2/*` 全 200 → `POST /api/lobby/accounts`（239 B）→ `PUT /api/lobby` → `member` 保活拿回**真实厅体 1158 B**；期间 54 个请求，**0 非 200** |
+| 12:38:21–12:40:14 | **志愿者（公网 IP 另存于 gitignored 证据）** | **完整登录跑通**：`Configuration/GameClient` → `Account/Login` 200 → `WarSeason/*`、`Progression/*`、`FriendsV2/*` 全 200 → `POST /api/lobby/accounts`（239 B）→ `PUT /api/lobby` → `member` 保活拿回**真实厅体 1158 B**；期间 54 个请求，**0 非 200** |
 | 12:40:14 之后 | 志愿者 | **断流**，无任何游戏请求 |
 | 14:52:12 | 我方（中继 `8.163.50.174`） | 437 B 真实客户端登录（形状含 44 字符 base64 的 `publicKey` 字段 ✓ 证明客户端确实自报公钥） |
 | 14:53:07 | 志愿者 | 两次 `curl GET /` → **200 0B**（`[fallback:root]`）= 其机器当场能完成 TLS+HTTP |
@@ -103,7 +103,7 @@ powershell -Command "Get-ChildItem Cert:\CurrentUser\Root | ? { \$_.Thumbprint -
 ### 8.2 排除项（都已实测）
 
 - 服务：`hd2-discovery` **active**；`healthcheck.sh` **PASS**；nginx 错误日志干净（最近 emerg 是 2026-08-26 的 18001 端口，与本服务无关）。
-- 封禁/限流：`ipset test YJ-GLOBAL-INBLOCK 183.197.36.254` → **NOT in set**；无 fail2ban；vhost 无 `limit_conn`/`limit_req`。
+- 封禁/限流：`ipset test YJ-GLOBAL-INBLOCK <志愿者IP>` → **NOT in set**；无 fail2ban；vhost 无 `limit_conn`/`limit_req`。
 - 证书/CRL/网络：志愿者 14:53 的 curl 200 已把这三层一次性排除。
 - 我方挂载的 `Account/Keys`：我方登录体形状里 `publicKey`（44 字符 base64）在，mock 侧该账号 `public_key` 已存、`real_id` 已学到 → **新机制前置条件成立**。
 
