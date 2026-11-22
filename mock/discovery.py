@@ -76,6 +76,8 @@ class DiscoveryLobby:
             "login": 0, "put": 0, "get": 0, "get_hit": 0, "join": 0, "join_rejected": 0,
             "leave": 0, "conflict": 0, "expired": 0, "expired_accounts": 0,
             "closed": 0, "closed_hit": 0,
+            # 占位厅（member 先于 PUT）与真房主 PUT 接管占位的次数（2026-11-22 E3）
+            "provisional": 0, "takeover": 0,
         }
         self._restore()
 
@@ -199,9 +201,15 @@ class DiscoveryLobby:
             self._expire_locked()
             existing = self._lobbies.get(lobby_id)
             if existing is not None and existing["owner"] != account:
-                # 同一大厅号被另一账号写入：更可能是客户端的旧缓存或串号，拒绝而不覆盖
-                self._stats["conflict"] += 1
-                return None
+                if existing.get("provisional"):
+                    # 首接触占位厅（由 `member` 先到而造，见 join）：真房主的 PUT **直接接管**。
+                    # 占位内容来自「客户端自己说它在这个厅里」，不可信 —— 丢弃而不是合并成员。
+                    self._stats["takeover"] = self._stats.get("takeover", 0) + 1
+                    existing = None
+                else:
+                    # 已确认的大厅被另一账号写入：更可能是客户端的旧缓存或串号，拒绝而不覆盖
+                    self._stats["conflict"] += 1
+                    return None
             now = self._now()
             # 成员是**服务端权威**：owner 客户端周期重发它自己那份（可能还没看到新成员）的
             # lobby body 时，不能把已加入的成员抹掉（2026-11-21 E2 实测：PUT 抹掉 join 后，
@@ -210,7 +218,8 @@ class DiscoveryLobby:
             _normalize_members(lobby, account)
             _merge_member_ids(lobby, members_before, account)
             self._tombstones.pop(lobby_id, None)     # 重开同一厅号：清掉关闭标记
-            self._lobbies[lobby_id] = {"body": lobby, "owner": account, "updated": now}
+            self._lobbies[lobby_id] = {"body": lobby, "owner": account, "updated": now,
+                                       "provisional": False}
             self._stats["put"] += 1
             info = self._accounts.setdefault(
                 account, {"ip": "", "instance_id": "", "last_seen": now, "lobby_id": None})
@@ -246,14 +255,57 @@ class DiscoveryLobby:
                 return entry
         return None
 
+    def _placeholder_lobby_locked(self, lobby_id: str, account: str,
+                                  explicit_id: str = "") -> dict:
+        """为「`member` 先于 `PUT`」的未知厅造一个**占位厅**（`provisional=True`）。
+
+        实测依据（2026-11-22 E3）：客户端进厅时先发保活 `member`，它自己那份 `PUT /api/lobby`
+        晚到几秒到几十秒；此间未知厅若回 `{}`，客户端拿到空对象、状态不一致。
+
+        占位内容刻意最小：调用方是唯一成员（暂当房主），其余字段由 `_lobby_view()` 补默认值。
+        它**不是**权威状态 —— 真房主的 `PUT` 会接管并丢弃这里的内容（见 `put()` 的 takeover）。
+        """
+        info = self._accounts.get(account) or {}
+        member_id = explicit_id or str(info.get("real_id") or "") or account
+        slot = {"memberAccountId": "", "isHost": False, "hasInfo": True}
+        self._fill_member_locked(slot, account, member_id)
+        slot["isHost"] = True                     # 首接触的一方通常是房主（E3 两次实测均如此）
+        body: dict = {
+            "lobbyId": lobby_id,
+            "players": [slot],
+            "memberAccountIds": [member_id] if _looks_like_account(str(member_id)) else [],
+            "startTime": "0",
+            "state": 1,
+            "privacyMode": 0,
+        }
+        _sync_member_count_locked(body)
+        entry = {"body": body, "owner": account, "updated": self._now(), "provisional": True}
+        self._lobbies[lobby_id] = entry
+        self._stats["provisional"] = self._stats.get("provisional", 0) + 1
+        if not info.get("lobby_id"):
+            info["lobby_id"] = lobby_id
+            self._accounts[account] = info
+        self._touch_locked(account)
+        return entry
+
     def join(self, account: str, lobby_id: str, member: Any) -> dict | None:
-        """加入大厅：把成员填进空槽（或追加），幂等。返回更新后的大厅；失败返回 None。"""
+        """加入大厅：把成员填进空槽（或追加），幂等。返回更新后的大厅；失败返回 None。
+
+        **未知厅不再拒绝（2026-11-22 E3 修）**：客户端的保活 `member` 可能**先于它自己的
+        `PUT /api/lobby`** 到达（E3 现场两次：15:09:21 志愿者、15:15:50 我方），原来的
+        「查不到厅就回 `{}`」会让客户端拿到空对象、状态不一致（首次入厅失败的候选原因）。
+        现在改成**首接触即建占位厅**（owner=调用方，成员=调用方本人），真房主随后的 `PUT`
+        按 `put()` 里的 takeover 规则接管并丢弃占位内容。
+        """
         explicit_id = _member_id_from(member)
         with self._lock:
             self._expire_locked()
-            entry = self._find_locked((lobby_id or "").strip())
+            key = (lobby_id or "").strip()
+            entry = self._find_locked(key)
             if entry is None:
-                return None
+                if not key:
+                    return None
+                entry = self._placeholder_lobby_locked(key, account, explicit_id)
             lobby = entry["body"]
             info = self._accounts.get(account) or {}
             # 请求体通常是 null：优先用「它自己 PUT 大厅时暴露的真实 accountId」
@@ -505,7 +557,9 @@ class DiscoveryLobby:
                 for a, i in self._accounts.items()
             },
             "lobbies": {
-                lid: {"owner": e["owner"], "body": e["body"], "age": age(e["updated"])}
+                lid: {"owner": e["owner"], "body": e["body"],
+                      "provisional": bool(e.get("provisional")),
+                      "age": age(e["updated"])}
                 for lid, e in self._lobbies.items()
             },
             "tombstones": {
@@ -560,6 +614,7 @@ class DiscoveryLobby:
                 if not isinstance(entry, dict) or not isinstance(entry.get("body"), dict):
                     continue
                 self._lobbies[lid] = {"body": entry["body"], "owner": entry.get("owner", ""),
+                                      "provisional": bool(entry.get("provisional")),
                                       "updated": now - float(entry.get("age") or 0.0)}
             for lid, tb in (snap.get("tombstones") or {}).items():
                 if isinstance(tb, dict):

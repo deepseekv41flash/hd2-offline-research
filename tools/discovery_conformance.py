@@ -18,6 +18,10 @@
   C09 离开（`DELETE /api/lobby/clear`）后成员移除、厅回收
   C10 未知厅响应语义（`--unknown-policy empty|closed`，默认 empty=当前契约）
   C11 大厅列表 `accountLobbies` 索引与实际厅一致
+  C12 `accountLobbies` 按请求 ids **同序等长**回显（无厅条目不带 lobbyId 键）
+  C13 厅 body 满足真实解析器要求（必需数字字段齐全、players 定长槽、人数真实）
+  C14 加入门槛：Login 自报的公钥可按真实 accountId 取回
+  C15 `member` 首帧（早于 PUT）不被拒——未知厅回厅体而不是 {}（2026-11-22 E3 修）
 
 用法：
     python tools/discovery_conformance.py                          # 进程内
@@ -357,6 +361,15 @@ def run_checks(transport, *, unknown_policy: str = "empty") -> list[dict]:
               and keys[0].get("key") == public_key)
         add("C14 公钥按 accountId 可取", ok,
             f"status={st_k} source={src_k} keys={keys}")
+
+        # C15 `member` 首帧（早于 PUT）不被拒：未知厅应回厅体而不是 {}（2026-11-22 E3 修）
+        phantom = f"{uuid.uuid4()}.r-{uuid.uuid4().hex[:8]}"
+        st_m, body_m, src_m = ctx.req("POST", f"/api/lobby/{phantom}/member", b"null", account=ctx.c)
+        doc_m = _json_body(body_m) or {}
+        ok = (st_m == 200 and doc_m.get("lobbyId") == phantom
+              and doc_m.get("numLobbyMembers") == 1 and len(body_m) > 100)
+        add("C15 member 首帧回厅体", ok,
+            f"status={st_m} source={src_m} bytes={len(body_m)} num={doc_m.get('numLobbyMembers')}")
     finally:
         for acc in (ctx.a, ctx.b, ctx.c):
             try:

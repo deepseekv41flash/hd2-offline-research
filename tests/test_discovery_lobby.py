@@ -410,3 +410,66 @@ def test_handler_login_honours_account_header(synthetic_capture: Path):
     assert acc == header["x-hd2-account"]
     served = h.discovery.account_keys([header["x-hd2-account"]])
     assert served["accountKeys"] == [{"platformAccountId": header["x-hd2-account"], "key": key}]
+
+
+# ------------------------------------------------ member 先于 PUT（2026-11-22 E3 修）
+PHANTOM_LOBBY = "33333333-4444-4555-8666-777777777777.r-00000003"
+
+
+def test_member_on_unknown_lobby_creates_placeholder():
+    """客户端保活 `member` 可能先于它自己的 `PUT /api/lobby` 到达（E3 现场两次实测）。
+
+    原行为：查不到厅就回 `{}`（2 B），客户端拿到空对象、状态不一致。
+    新行为：**首接触即建占位厅**，回一个「自己在厅里」的厅体。
+    """
+    svc, _ = _service()
+    acc = svc.account_for(client_addr="10.0.0.1")
+    joined = svc.join(acc, PHANTOM_LOBBY, None)
+    assert joined is not None, "未知厅不应被拒绝"
+    assert joined["lobbyId"] == PHANTOM_LOBBY
+    assert joined["numLobbyMembers"] == 1
+    host_slot = next(p for p in joined["players"] if p.get("memberAccountId") == acc)
+    assert host_slot["isHost"] is True
+    assert svc.get(PHANTOM_LOBBY) is not None
+    assert svc.stats()["provisional"] == 1
+
+
+def test_real_owner_put_takes_over_placeholder():
+    """占位厅不是权威：真房主的 `PUT` 应**接管**并把占位内容（可能是别人）丢掉。"""
+    svc, _ = _service()
+    acc_join = svc.account_for(client_addr="10.0.0.2")
+    acc_host = svc.account_for(client_addr="10.0.0.1")
+    assert svc.join(acc_join, PHANTOM_LOBBY, None) is not None      # 先造占位
+
+    host_body = _host_lobby(REAL_HOST_ID, "Fanna_")
+    host_body["lobbyId"] = PHANTOM_LOBBY              # 同一个厅号：真房主来接管
+    saved = svc.put(acc_host, host_body)
+    assert saved is not None, "真房主 PUT 不应被 conflict 拒掉"
+    got = svc.get(PHANTOM_LOBBY)
+    ids = [p["memberAccountId"] for p in got["players"] if p.get("memberAccountId")]
+    assert ids == [REAL_HOST_ID], f"占位内容应被丢弃，实际={ids}"
+    assert got["numLobbyMembers"] == 1
+    assert svc.stats()["takeover"] == 1
+
+
+def test_established_lobby_still_rejects_other_account_put():
+    """接管只对**占位厅**生效；已经由 PUT 建立的厅，别人再 PUT 仍按串号拒绝（回归）。"""
+    svc, _ = _service()
+    acc_host = svc.account_for(client_addr="10.0.0.1")
+    acc_other = svc.account_for(client_addr="10.0.0.3")
+    svc.put(acc_host, _host_lobby(REAL_HOST_ID, "Fanna_"))          # 已确认的厅
+    assert svc.put(acc_other, _lobby(players=[
+        {"memberAccountId": REAL_JOINER_ID, "isHost": True, "hasInfo": True}])) is None
+    assert svc.stats()["conflict"] == 1
+    assert svc.stats()["takeover"] == 0
+
+
+def test_handler_member_first_frame_is_not_empty(synthetic_capture: Path):
+    """接线层回归：未知厅的 `member` 回包必须是厅体（不是 `{}` 2 B）。"""
+    h = _handler(synthetic_capture)
+    r = h.handle("POST", f"/api/lobby/{PHANTOM_LOBBY}/member", b"null", client_addr="10.0.0.5")
+    assert r.source == "discovery:lobby_member"
+    doc = r.json()
+    assert doc.get("lobbyId") == PHANTOM_LOBBY
+    assert doc.get("numLobbyMembers") == 1
+    assert len(r.body) > 100, f"回包太小，像是空对象: {len(r.body)}B"
