@@ -31,6 +31,9 @@ from typing import Any, Callable
 DEFAULT_TTL_SECONDS = 600.0
 DEFAULT_MAX_MEMBERS = 4
 DEFAULT_TOMBSTONE_TTL_SECONDS = 1800.0   # 关闭标记保留 30 min（远大于客户端 90 s 重试窗）
+DEFAULT_BINDING_TTL_SECONDS = 6 * 3600.0  # id→账号 绑定保留 6 h（长于一次会话即可）
+DEFAULT_KEYS_WAIT_SECONDS = 1.5           # Account/Keys 未命中时的等待上限（服务端是多线程）
+DEFAULT_KEYS_UNKNOWN_WINDOW_SECONDS = 180.0  # 「刚登录还没上报身份」的候选窗口
 STATE_VERSION = 1
 
 
@@ -54,6 +57,7 @@ class DiscoveryLobby:
         account_prefix: str = "7656119",
         persist_path: "str | Path | None" = None,
         tombstone_ttl_seconds: float = DEFAULT_TOMBSTONE_TTL_SECONDS,
+        binding_ttl_seconds: float = DEFAULT_BINDING_TTL_SECONDS,
     ):
         self._lock = threading.Lock()
         self._ttl = float(ttl_seconds)
@@ -63,6 +67,10 @@ class DiscoveryLobby:
         self._seq = 0
         # account_id -> {"ip", "instance_id", "last_seen", "lobby_id", "real_id", "profile"}
         self._accounts: dict[str, dict] = {}
+        # real_id -> {"account": 内部账号, "at": ts, "provisional": bool}
+        # 只记「id → 账号」的指向，公钥永远从账号当前会话读（公钥是会话级的，不能缓存）。
+        self._bindings: dict[str, dict] = {}
+        self._binding_ttl = float(binding_ttl_seconds)
         # 来源 IP -> account_id（登录时建立；未登录的首次调用懒建）
         self._by_ip: dict[str, str] = {}
         # lobby_id -> {"body": dict, "owner": account_id, "updated": float}
@@ -78,6 +86,8 @@ class DiscoveryLobby:
             "closed": 0, "closed_hit": 0,
             # 占位厅（member 先于 PUT）与真房主 PUT 接管占位的次数（2026-11-22 E3）
             "provisional": 0, "takeover": 0, "replaced": 0,
+            # 公钥解析来源（2026-11-22 时序缝隙方案 A/B）
+            "keys_hit": 0, "keys_bind_hit": 0, "keys_miss": 0, "keys_waited": 0,
         }
         self._restore()
 
@@ -120,6 +130,9 @@ class DiscoveryLobby:
             key = _public_key(body)
             if key:
                 info["public_key"] = key
+                # 公钥是**会话级**的：同一账号每次登录都换一把，绑定表只存账号指向，
+                # 这里把「指向该账号」的绑定一起刷新（不需要存 key 本身）。
+                self._bind_account_sync_locked(account)
             if client_addr:
                 self._by_ip[client_addr] = account
         return {"sessionId": str(uuid.uuid4())}
@@ -172,6 +185,14 @@ class DiscoveryLobby:
             if not _looks_like_account(mid):
                 continue
             info["real_id"] = mid
+            # 权威绑定：真实 id → 本账号（PUT 是唯一权威来源，覆盖任何 provisional 猜测）
+            self._bindings[mid] = {"account": account, "at": self._now(), "provisional": False}
+            # 真相到手后，丢弃本账号其它**临时猜测**绑定（猜错了就别让它继续生效）
+            for other, binding in list(self._bindings.items()):
+                if (other != mid and binding.get("provisional")
+                        and str(binding.get("account") or "") == account):
+                    self._bindings.pop(other, None)
+            self._bind_account_sync_locked(account)
             profile = {k: p[k] for k in ("playerName", "playerRank", "experience",
                                          "commendRank", "sourcePlatform") if k in p}
             if profile:
@@ -400,33 +421,124 @@ class DiscoveryLobby:
                        and not _lobby_is_zombie(self._lobbies[lid]["body"])]
             return {"accountLobbies": account_lobbies, "lobbies": lobbies}
 
-    def account_keys(self, ids: list[str]) -> dict:
-        """`GET /api/Account/Keys?id=<accountId>[,<id>…]`：返回这些账号的公钥。
+    def account_keys(self, ids: "list[str]", *, wait_seconds: float = 0.0,
+                     allow_single_unknown: bool = True,
+                     unknown_window_seconds: float = DEFAULT_KEYS_UNKNOWN_WINDOW_SECONDS) -> dict:
+        """`GET /api/Account/Keys?id=<accountId>[,<id>…]`：返回这些账号**当前会话**的公钥。
 
-        **这是加入的真正门槛**（E2 卡住的根因，2026-11-22 定位）：一台游戏只有在
-        `GET /Account/Keys?id=<对端 accountId>` 拿到对端公钥、且与本机游戏连接上看到的一致时，
-        才会接纳该玩家；拿不到就**永远不接纳**，现场表现是加载卡住 / lobby timeout。
-        公钥来源：每个客户端在 `POST /Account/Login` 的 `publicKey` 字段自报（见 `_public_key`），
-        服务端只存原样、不解释（1..256 个可打印 ASCII 字符，不是十六进制）。
-        查不到的 id 直接不出现在数组里（真实后端行为：空数组 ⇒ 不接纳）。
+        **这是加入的真正门槛**（E2 卡住的根因，2026-11-22 定位）：一台游戏只有在拿到对端公钥、
+        且与本机游戏连接上看到的一致时才会接纳该玩家；拿不到就永远不接纳（卡加载 / lobby timeout）。
+
+        公钥是**会话级**的（2026-11-22 实测：同账号五次登录五把不同 key），所以绝不能缓存 key；
+        能缓存的只有「real_id → 账号」的指向。解析顺序（对应设计档 §4.1）：
+
+          ① 某个账号的 `real_id` 命中 → 用它当前会话的 key；
+          ② 绑定表命中（PUT 学到的权威绑定，或之前建立的临时绑定）→ 该账号当前 key；
+          ③ 仍未命中且允许等待 → 50 ms 轮询，最多 `wait_seconds`（服务端 ThreadingHTTPServer，
+             等待只占本条连接；其它线程的 `PUT` 会在此期间补齐 ①）；
+          ④ 仍未命中且允许「单未知绑定」→ 若**有且仅有一个**刚登录、还没上报身份的账号，
+             把请求的 id 临时绑到它并返回它当前 key（真 PUT 到达即被权威绑定覆盖）；
+          ⑤ 否则该 id 不出现在数组里（真实后端行为：空数组 ⇒ 不接纳）。
         """
-        out: list[dict] = []
-        with self._lock:
-            self._expire_locked()
-            for ident in ids:
-                key = self._public_key_locked(ident)
-                if key:
-                    out.append({"platformAccountId": ident, "key": key})
-            return {"accountKeys": out}
+        requested: list[str] = []
+        for ident in ids or []:
+            text = str(ident or "").strip()
+            if text and text not in requested:
+                requested.append(text)
+        if not requested:
+            return {"accountKeys": []}
 
-    def _public_key_locked(self, ident: str) -> str:
-        """按真实 accountId（或内部账号令牌）找公钥。"""
+        deadline = time.monotonic() + max(0.0, float(wait_seconds))
+        resolved: dict[str, str] = {}
+        source: dict[str, str] = {}
+        waited = False
+        while True:
+            with self._lock:
+                self._expire_locked()
+                for ident in requested:
+                    if ident in resolved:
+                        continue
+                    hit = self._known_key_locked(ident)
+                    if hit is not None:
+                        resolved[ident], source[ident] = hit
+            if len(resolved) == len(requested) or time.monotonic() >= deadline:
+                break
+            if not waited:
+                waited = True
+                with self._lock:
+                    self._stats["keys_waited"] += 1
+            time.sleep(0.05)
+
+        # ④ 单未知兜底：只在候选**唯一**时动手（3 人以上场景保守退回 miss）
+        bound = 0
+        missing = [i for i in requested if i not in resolved]
+        if missing and allow_single_unknown:
+            with self._lock:
+                self._expire_locked()
+                cand = self._single_unknown_candidate_locked(unknown_window_seconds)
+                if cand is not None:
+                    token, key = cand
+                    for ident in missing:
+                        self._bindings[ident] = {"account": token, "at": self._now(),
+                                                 "provisional": True}
+                        resolved[ident] = key
+                        source[ident] = "binding"
+                        bound += 1
+                    self._save_locked()
+
+        with self._lock:
+            for ident in requested:
+                if ident not in resolved:
+                    self._stats["keys_miss"] += 1
+                elif source.get(ident) == "account":
+                    self._stats["keys_hit"] += 1
+                else:
+                    self._stats["keys_bind_hit"] += 1
+
+        return {"accountKeys": [{"platformAccountId": i, "key": resolved[i]}
+                                for i in requested if i in resolved]}
+
+    def _known_key_locked(self, ident: str) -> "tuple[str, str] | None":
+        """权威解析：①账号 real_id 命中 → (key, "account")；②绑定表命中 → (key, "binding")。"""
         if not ident:
-            return ""
+            return None
         for token, info in self._accounts.items():
             if token == ident or str(info.get("real_id") or "") == ident:
-                return str(info.get("public_key") or "")
-        return ""
+                key = str(info.get("public_key") or "")
+                if key:
+                    return key, "account"
+        binding = self._bindings.get(ident)
+        if binding:
+            info = self._accounts.get(str(binding.get("account") or ""))
+            key = str((info or {}).get("public_key") or "")
+            if key:
+                return key, "binding"
+        return None
+
+    def _single_unknown_candidate_locked(self, window_seconds: float) -> "tuple[str, str] | None":
+        """唯一「已登录但还没上报过身份」的账号 → (账号, 当前 key)；不是恰好一个则返回 None。"""
+        now = self._now()
+        cands: list[tuple[str, str]] = []
+        for token, info in self._accounts.items():
+            key = str(info.get("public_key") or "")
+            if not key or info.get("real_id"):
+                continue
+            if now - float(info.get("last_seen") or 0.0) > float(window_seconds):
+                continue
+            cands.append((token, key))
+        return cands[0] if len(cands) == 1 else None
+
+    def _bind_account_sync_locked(self, account: str) -> None:
+        """把「指向该账号」的绑定刷新一次时间（账号还活跃，绑定就不该被 TTL 清掉）。"""
+        now = self._now()
+        for binding in self._bindings.values():
+            if str(binding.get("account") or "") == account:
+                binding["at"] = now
+
+    def _public_key_locked(self, ident: str) -> str:
+        """兼容旧调用：只做权威解析（不触发等待/猜测）。"""
+        hit = self._known_key_locked(ident)
+        return hit[0] if hit is not None else ""
 
     def _account_lobby_index_locked(self) -> dict[str, str]:
         """accountId → lobbyId 索引：owner 的内部/真实身份 + 厅内所有成员的真实 ID。
@@ -514,6 +626,11 @@ class DiscoveryLobby:
             for info in self._accounts.values():
                 if info.get("lobby_id") and info["lobby_id"] not in self._lobbies:
                     info["lobby_id"] = None
+        # id→账号 绑定：按 TTL 清理；账号已不在的绑定失去意义，一并清掉
+        for ident, binding in list(self._bindings.items()):
+            account = str(binding.get("account") or "")
+            if now - float(binding.get("at") or 0.0) > self._binding_ttl or account not in self._accounts:
+                self._bindings.pop(ident, None)
 
     # ------------------------------------------------------------------ 终态 / 持久化
     def _retire_lobby_locked(self, lobby_id: str, reason: str) -> None:
@@ -601,6 +718,11 @@ class DiscoveryLobby:
                 lid: {"reason": t["reason"], "age": age(t["closed_at"])}
                 for lid, t in self._tombstones.items()
             },
+            "bindings": {
+                ident: {"account": b.get("account"), "provisional": bool(b.get("provisional")),
+                        "age": age(b.get("at") or now)}
+                for ident, b in self._bindings.items()
+            },
         }
 
     def _save_locked(self) -> None:
@@ -651,6 +773,11 @@ class DiscoveryLobby:
                 self._lobbies[lid] = {"body": entry["body"], "owner": entry.get("owner", ""),
                                       "provisional": bool(entry.get("provisional")),
                                       "updated": now - float(entry.get("age") or 0.0)}
+            for ident, b in (snap.get("bindings") or {}).items():
+                if isinstance(b, dict) and b.get("account"):
+                    self._bindings[str(ident)] = {
+                        "account": str(b["account"]), "provisional": bool(b.get("provisional")),
+                        "at": now - float(b.get("age") or 0.0)}
             for lid, tb in (snap.get("tombstones") or {}).items():
                 if isinstance(tb, dict):
                     self._tombstones[lid] = {

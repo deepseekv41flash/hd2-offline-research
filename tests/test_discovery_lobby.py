@@ -47,9 +47,11 @@ def _lobby(**patch) -> dict:
     return body
 
 
-def _service(ttl: float = 60, max_members: int = 4) -> tuple[DiscoveryLobby, FakeClock]:
+def _service(ttl: float = 60, max_members: int = 4,
+             persist: "Path | None" = None) -> tuple[DiscoveryLobby, FakeClock]:
     clock = FakeClock()
-    return DiscoveryLobby(ttl_seconds=ttl, max_members=max_members, clock=clock), clock
+    return DiscoveryLobby(ttl_seconds=ttl, max_members=max_members, clock=clock,
+                          persist_path=persist), clock
 
 
 # ---------------------------------------------------------------- 账号
@@ -526,3 +528,142 @@ def test_accounts_index_prefers_newest_lobby():
     view = svc.accounts(acc, ids={"ids": [REAL_HOST_ID]})
     assert view["accountLobbies"][0]["lobbyId"] == SECOND_LOBBY
     assert [l["lobbyId"] for l in view["lobbies"]] == [SECOND_LOBBY]
+
+
+# -------------------------------- Account/Keys 时序缝隙（方案 A 等待 + B 单未知绑定）
+KEY_ONE = "Q2hhbmdlTWUxMjM0NTY3ODkwYWJjZGVmZ2hpamts"      # 44 字符，模拟会话级公钥
+KEY_TWO = "QW5vdGhlcktleTAxMjM0NTY3ODkwYWJjZGVmZ2hpam"      # 同一账号重新登录后的新 key
+
+
+def _login_with_key(svc: DiscoveryLobby, addr: str, key: str) -> str:
+    svc.login(client_addr=addr, body={"instanceId": "inst", "publicKey": key})
+    return svc.account_for(client_addr=addr)
+
+
+def test_account_keys_binds_single_unknown_login():
+    """B：只剩一个「刚登录、还没上报身份」的账号时，把请求的 id 临时绑给它并回当前 key。"""
+    svc, _ = _service()
+    _login_with_key(svc, "10.0.0.2", KEY_ONE)
+    out = svc.account_keys([REAL_HOST_ID], allow_single_unknown=True)
+    assert out == {"accountKeys": [{"platformAccountId": REAL_HOST_ID, "key": KEY_ONE}]}
+    assert svc.stats()["keys_bind_hit"] == 1
+    assert svc._bindings[REAL_HOST_ID]["provisional"] is True
+
+
+def test_account_keys_ambiguous_unknown_returns_empty():
+    """有**两个**未上报身份的账号时不猜（3 人以上场景保守退回 miss）。"""
+    svc, _ = _service()
+    _login_with_key(svc, "10.0.0.2", KEY_ONE)
+    _login_with_key(svc, "10.0.0.3", KEY_TWO)
+    out = svc.account_keys([REAL_HOST_ID], allow_single_unknown=True)
+    assert out == {"accountKeys": []}
+    assert svc.stats()["keys_miss"] == 1
+
+
+def test_account_keys_waits_for_late_put():
+    """A：未命中时短暂等待，等对方 PUT 上报身份后由权威路径命中。"""
+    import threading, time as _time
+    svc, _ = _service()
+    acc_host = _login_with_key(svc, "10.0.0.1", KEY_ONE)
+
+    def late_put():
+        _time.sleep(0.2)
+        svc.put(acc_host, _host_lobby(REAL_HOST_ID, "Host"))
+
+    th = threading.Thread(target=late_put, daemon=True)
+    th.start()
+    t0 = _time.monotonic()
+    out = svc.account_keys([REAL_HOST_ID], wait_seconds=1.5, allow_single_unknown=False)
+    elapsed = _time.monotonic() - t0
+    th.join(timeout=2)
+
+    assert out == {"accountKeys": [{"platformAccountId": REAL_HOST_ID, "key": KEY_ONE}]}
+    assert svc.stats()["keys_hit"] == 1
+    assert svc.stats()["keys_waited"] == 1
+    assert elapsed >= 0.15, f"应当等到了 PUT（实际 {elapsed:.2f}s）"
+
+
+def test_account_keys_wait_disabled_is_immediate():
+    """wait_seconds=0 且不猜测时立刻返回空数组（不引入额外延迟）。"""
+    import time as _time
+    svc, _ = _service()
+    _login_with_key(svc, "10.0.0.2", KEY_ONE)
+    t0 = _time.monotonic()
+    out = svc.account_keys([REAL_HOST_ID], wait_seconds=0.0, allow_single_unknown=False)
+    assert out == {"accountKeys": []}
+    assert _time.monotonic() - t0 < 0.2
+
+
+def test_account_keys_relogin_returns_new_session_key():
+    """公钥是会话级的：账号重新登录换了新 key，绑定表指向账号 → 自动回新 key。"""
+    svc, _ = _service()
+    acc = _login_with_key(svc, "10.0.0.1", KEY_ONE)
+    svc.put(acc, _host_lobby(REAL_HOST_ID, "Host"))            # 建立权威绑定
+    assert svc.account_keys([REAL_HOST_ID])["accountKeys"][0]["key"] == KEY_ONE
+
+    _login_with_key(svc, "10.0.0.1", KEY_TWO)                  # 同账号重新登录 → 新 key
+    assert svc.account_keys([REAL_HOST_ID])["accountKeys"][0]["key"] == KEY_TWO
+
+
+def test_true_identity_drops_wrong_provisional_guess():
+    """猜测被真 PUT 推翻后，错的那条临时绑定必须失效（不能再拿错 key 糊弄客户端）。"""
+    svc, _ = _service()
+    acc = _login_with_key(svc, "10.0.0.1", KEY_ONE)
+    guessed_id = "19999999999999999999"
+    assert svc.account_keys([guessed_id], allow_single_unknown=True)["accountKeys"]
+    assert svc._bindings[guessed_id]["provisional"] is True
+
+    svc.put(acc, _host_lobby(REAL_HOST_ID, "Host"))            # 真相：它的 id 是 REAL_HOST_ID
+    assert guessed_id not in svc._bindings, "错误猜测应当被清除"
+    assert svc.account_keys([guessed_id], allow_single_unknown=False) == {"accountKeys": []}
+    assert svc.account_keys([REAL_HOST_ID], allow_single_unknown=False)["accountKeys"][0]["key"] == KEY_ONE
+
+
+def test_bindings_survive_clean_restart(tmp_path: Path):
+    """绑定随状态落盘：干净重启后仍能按 id 取到 key（公钥按会话重新登录会刷新）。"""
+    persist = tmp_path / "state.json"
+    svc, _ = _service(persist=persist)
+    acc = _login_with_key(svc, "10.0.0.1", KEY_ONE)
+    svc.put(acc, _host_lobby(REAL_HOST_ID, "Host"))
+    svc.close()                                                 # 干净退出
+
+    revived = DiscoveryLobby(persist_path=persist)
+    out = revived.account_keys([REAL_HOST_ID], allow_single_unknown=False)
+    assert out["accountKeys"][0]["key"] == KEY_ONE
+
+
+def test_handler_account_keys_binds_single_unknown_via_profile(synthetic_capture: Path):
+    """接线层：走 HTTP 路径时按 profile 默认值启用 B（单未知绑定）。"""
+    h = _handler(synthetic_capture)
+    h.handle("POST", "/api/Account/Login",
+             json.dumps({"instanceId": "P", "publicKey": KEY_ONE}).encode(),
+             client_addr="10.0.0.1")
+    r = h.handle("GET", f"/api/Account/Keys?id={REAL_HOST_ID}", b"", client_addr="10.0.0.2")
+    assert r.status == 200 and r.source == "discovery:account_keys"
+    keys = r.json()["accountKeys"]
+    assert keys == [{"platformAccountId": REAL_HOST_ID, "key": KEY_ONE}]
+
+
+def test_acceptance_peer_restarted_then_join_click_works_first_time(synthetic_capture: Path):
+    """复现 E3 现场：对端重启后**立刻**点加入（对方还没上报大厅），首次点击就应拿到公钥。
+
+    现场时序（2026-11-22 15:38）：房主已就绪；加入方重启登录（新公钥，real_id 未上报）；
+    房主客户端立即查 `Keys?id=<加入方>` → 当时回 18 B 空包 → 客户端静默放弃（差 643 ms）。
+    """
+    h = _handler(synthetic_capture)
+    # 房主：登录 + 上报大厅（已就绪，real_id 已知）
+    h.handle("POST", "/api/Account/Login",
+             json.dumps({"instanceId": "HOST", "publicKey": KEY_ONE}).encode(),
+             client_addr="10.0.0.1")
+    h.handle("PUT", "/api/lobby",
+             json.dumps(_host_lobby(REAL_HOST_ID, "Host")).encode(), client_addr="10.0.0.1")
+    # 加入方：刚重启、只登录（新公钥），尚未 PUT
+    h.handle("POST", "/api/Account/Login",
+             json.dumps({"instanceId": "JOIN", "publicKey": KEY_TWO}).encode(),
+             client_addr="10.0.0.2")
+
+    # 房主客户端点加入 → 立刻查加入方公钥
+    r = h.handle("GET", f"/api/Account/Keys?id={REAL_JOINER_ID}", b"", client_addr="10.0.0.1")
+    keys = r.json()["accountKeys"]
+    assert keys == [{"platformAccountId": REAL_JOINER_ID, "key": KEY_TWO}], \
+        f"首次点击就应拿到对端公钥，实际={keys}"

@@ -142,6 +142,9 @@ class MockHandler:
                 tombstone_ttl_seconds=float(
                     lobby_cfg.get("tombstone_ttl_seconds",
                                   discovery.DEFAULT_TOMBSTONE_TTL_SECONDS)),
+                binding_ttl_seconds=float(
+                    lobby_cfg.get("binding_ttl_seconds",
+                                  discovery.DEFAULT_BINDING_TTL_SECONDS)),
             )
             if lobby_cfg.get("mode") == "discovery" else None
         )
@@ -244,9 +247,19 @@ class MockHandler:
                 # ?id=<accountId>[&id=…] 或 ?id=a,b —— 真实后端按 id 逐个回公钥，查不到的省略
                 ids = _query_ids(query)
                 if self.discovery is not None:
-                    return self._json(self.discovery.account_keys(ids),
-                                      source="discovery:account_keys"
-                                      + ("" if ids else ":no-id"))
+                    lobby_cfg = self.profile.get("lobby") or {}
+                    # 时序缝隙方案 A/B（2026-11-22）：未命中先短暂等待，再考虑单未知绑定
+                    return self._json(self.discovery.account_keys(
+                        ids,
+                        wait_seconds=float(lobby_cfg.get(
+                            "account_keys_wait_seconds",
+                            discovery.DEFAULT_KEYS_WAIT_SECONDS)),
+                        allow_single_unknown=bool(lobby_cfg.get(
+                            "account_keys_single_unknown_bind", True)),
+                        unknown_window_seconds=float(lobby_cfg.get(
+                            "account_keys_unknown_window_seconds",
+                            discovery.DEFAULT_KEYS_UNKNOWN_WINDOW_SECONDS)),
+                    ), source="discovery:account_keys" + ("" if ids else ":no-id"))
                 return self._json({"accountKeys": []}, source=src + ":empty")
             if name == "report_position":
                 return self._json({}, source=src)

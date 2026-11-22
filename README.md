@@ -68,14 +68,14 @@ tools/      抓包分析 / 样本构建 / 回放验证 / 控制台
   steam_appinfo.py    T8b 只读解析 Steam appinfo 分片（magic 0x0756442a），导出任一游戏的官方启动项
   discovery_probe.py  阶段2 发现层双客户端探针（--self-test 离线自测 / --url 远端验活）
   analyze_e2_capture.py  阶段2 E2 抓包判定（Steam SDR vs PlayFab Party，--self-test 可离线验证）
-  discovery_conformance.py  阶段2 发现层一致性套件（16 项 C01–C16；进程内 / --url 线上，支持 --cafile）
+  discovery_conformance.py  阶段2 发现层一致性套件（17 项 C01–C17；进程内 / --url 线上，支持 --cafile）
   e2_tunnel.py        阶段2 本机 SSH 中继（100.67.88.219:443 → 服务器 B → A 机 nginx）
   e2_watch.py         阶段2 实时跟随服务器 A 的 mock 日志到本地证据文件
   playfab_mitm.py     阶段2 PlayFab 明文抓包（自签 CA + CRL + 本地代理）
   crl_serve.ps1       阶段2 客户端本机 CRL 服务（127.0.0.1:18081，Schannel 必需）
-tests/      pytest 160 项（含真实抓包矩阵、TLS 端到端、脱敏门禁、B9 schema 采集/对照、TCP 转发）
+tests/      pytest 169 项（含真实抓包矩阵、TLS 端到端、脱敏门禁、B9 schema 采集/对照、TCP 转发）
 profiles/   offline-mock.json（与产品 profile 无关的独立配置）
-docs/       阶段1 定稿摘要(STAGE1-FINAL) + 结项档 + A2 主机依赖 + B2/B3 大厅/登录 + T4 出网清单 + T4b 无 PSN + B9 登录体 schema + T6 MITM 取证 + T7 必要性差分 + T8 计划（数据面取证/EAC-off）+ T8 结果（EAC-off ✗ 否证）+ T8-P3（SSLKEYLOGFILE ✗ 对游戏无效）+ T8b（Broken Arrow 关 EAC 机制对照）+ T8c（打补丁跳反作弊的成本评估：加固/加密壳）+ T8d（社区项目 HellForge：免反作弊=固定旧 build；阶段2 替身方案参考） + **阶段2 设计（STAGE2-DESIGN：方案对比/架构/里程碑/判定实验）** + 志愿者环境侦察清单（VOLUNTEER-RECON） + 侦察结果判定（VOLUNTEER-RECON-RESULT：条件通过，差管理员权限） + 预检包（PREFLIGHT-KIT：志愿者以管理员重测改机能力） + 判定实验 E1/E3/E4 结果（PlayFab 存活 / SDK 原版一致 / B10 未证） + 发现层 API 契约与 M1 实现（STAGE2-DISCOVERY-API-CONTRACT） + **真实加入链路与公钥门槛（STAGE2-REAL-JOIN-FLOW：Account/Keys 是加入开关）** + **E3 就绪/结项（STAGE2-E3-READINESS / STAGE2-E3-RESULT：双人全流程跑通 + 双向复测 + 僵尸厅修复）** + E3 志愿者排查单（STAGE2-E3-VOLUNTEER-TROUBLESHOOT / TESTCARD）
+docs/       阶段1 定稿摘要(STAGE1-FINAL) + 结项档 + A2 主机依赖 + B2/B3 大厅/登录 + T4 出网清单 + T4b 无 PSN + B9 登录体 schema + T6 MITM 取证 + T7 必要性差分 + T8 计划（数据面取证/EAC-off）+ T8 结果（EAC-off ✗ 否证）+ T8-P3（SSLKEYLOGFILE ✗ 对游戏无效）+ T8b（Broken Arrow 关 EAC 机制对照）+ T8c（打补丁跳反作弊的成本评估：加固/加密壳）+ T8d（社区项目 HellForge：免反作弊=固定旧 build；阶段2 替身方案参考） + **阶段2 设计（STAGE2-DESIGN：方案对比/架构/里程碑/判定实验）** + 志愿者环境侦察清单（VOLUNTEER-RECON） + 侦察结果判定（VOLUNTEER-RECON-RESULT：条件通过，差管理员权限） + 预检包（PREFLIGHT-KIT：志愿者以管理员重测改机能力） + 判定实验 E1/E3/E4 结果（PlayFab 存活 / SDK 原版一致 / B10 未证） + 发现层 API 契约与 M1 实现（STAGE2-DISCOVERY-API-CONTRACT） + **真实加入链路与公钥门槛（STAGE2-REAL-JOIN-FLOW：Account/Keys 是加入开关）** + **E3 就绪/结项（STAGE2-E3-READINESS / STAGE2-E3-RESULT：双人全流程跑通 + 双向复测 + 僵尸厅修复）** + E3 志愿者排查单（STAGE2-E3-VOLUNTEER-TROUBLESHOOT / TESTCARD） + **公钥时序缝隙设计与实现（STAGE2-DESIGN-KEY-TIMING-GAP：等待+单未知绑定）**
 docs/ 之外：deploy/discovery/（发现层 Debian/systemd 部署包）、kit/stage2/（客户端双路线测试包 + 测试卡）
 ```
 

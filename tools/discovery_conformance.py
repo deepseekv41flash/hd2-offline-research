@@ -382,6 +382,15 @@ def run_checks(transport, *, unknown_policy: str = "empty") -> list[dict]:
         gone = st_n == 200 and (st_old == 404 or (st_old == 200 and not _members(doc_old)))
         add("C16 换厅号回收旧厅", gone,
             f"put={st_n} source={src_n} 旧厅GET={st_old} body={str(doc_old)[:60]}")
+
+        # C17 Account/Keys 契约：查不到的 id 回 200 + 空数组（不是 404/500，也不回错 key）
+        ghost = "19999999999999999998"
+        st_g, body_g, src_g = ctx.req("GET", f"/api/Account/Keys?id={ghost}", account=ctx.a)
+        doc_g = _json_body(body_g) or {}
+        keys_g = doc_g.get("accountKeys")
+        ok = (st_g == 200 and isinstance(keys_g, list) and keys_g == [])
+        add("C17 Keys 未命中回空数组", ok,
+            f"status={st_g} source={src_g} keys={keys_g}")
     finally:
         for acc in (ctx.a, ctx.b, ctx.c):
             try:

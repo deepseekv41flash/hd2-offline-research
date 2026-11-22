@@ -27,7 +27,11 @@
     "max_members": 4,
     "unknown_lobby": "error:404",
     "persist": "state/discovery-state.json",
-    "tombstone_ttl_seconds": 1800
+    "tombstone_ttl_seconds": 1800,
+    "account_keys_wait_seconds": 1.5,
+    "account_keys_single_unknown_bind": true,
+    "account_keys_unknown_window_seconds": 180,
+    "binding_ttl_seconds": 21600
   },
   "body_shapes": {
     "enabled": true,
