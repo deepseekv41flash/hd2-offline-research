@@ -85,3 +85,38 @@ powershell -Command "Get-ChildItem Cert:\CurrentUser\Root | ? { \$_.Thumbprint -
 2. **账号归属靠来源 IP**：我方经中继 → A 看到的来源是**服务器 B 的公网 IP**；志愿者是其宽带 IP。两者可区分，但若志愿者也用中继则需显式 `X-HD2-Account`。
 3. **公钥到达时序**：对端登录后、首次 `PUT /api/lobby` 之前若被查 `Account/Keys` 会查不到（HellForge 用 3 s 等待兜底，我们暂未加）。E3 若在这里失败，再加等待。
 4. PlayFab 保持**真实**（不启 MITM）；Party 4104/4379 是否仍出现需 E3 判定。
+
+## 8. 志愿者报「服务器连不上」的日志侧诊断（2026-11-22 14:57）
+
+用户转述志愿者"服务器连不上"。**只看 A 机日志即可判定问题不在服务端**，证据如下。
+
+### 8.1 时间线（A 机 nginx access + mock 日志）
+
+| 时间（+0800） | 来源 | 事实 |
+|---|---|---|
+| 12:38:21–12:40:14 | **志愿者 `183.197.36.254`** | **完整登录跑通**：`Configuration/GameClient` → `Account/Login` 200 → `WarSeason/*`、`Progression/*`、`FriendsV2/*` 全 200 → `POST /api/lobby/accounts`（239 B）→ `PUT /api/lobby` → `member` 保活拿回**真实厅体 1158 B**；期间 54 个请求，**0 非 200** |
+| 12:40:14 之后 | 志愿者 | **断流**，无任何游戏请求 |
+| 14:52:12 | 我方（中继 `8.163.50.174`） | 437 B 真实客户端登录（形状含 44 字符 base64 的 `publicKey` 字段 ✓ 证明客户端确实自报公钥） |
+| 14:53:07 | 志愿者 | 两次 `curl GET /` → **200 0B**（`[fallback:root]`）= 其机器当场能完成 TLS+HTTP |
+| 14:56 起至今 | 我方 | 客户端持续请求全 200（`PUT /api/lobby`、`member` 保活、`lobby/accounts`） |
+
+### 8.2 排除项（都已实测）
+
+- 服务：`hd2-discovery` **active**；`healthcheck.sh` **PASS**；nginx 错误日志干净（最近 emerg 是 2026-08-26 的 18001 端口，与本服务无关）。
+- 封禁/限流：`ipset test YJ-GLOBAL-INBLOCK 183.197.36.254` → **NOT in set**；无 fail2ban；vhost 无 `limit_conn`/`limit_req`。
+- 证书/CRL/网络：志愿者 14:53 的 curl 200 已把这三层一次性排除。
+- 我方挂载的 `Account/Keys`：我方登录体形状里 `publicKey`（44 字符 base64）在，mock 侧该账号 `public_key` 已存、`real_id` 已学到 → **新机制前置条件成立**。
+
+### 8.3 判定与下一步
+
+**「连不上」不是网络层/服务端问题**：志愿者本机能在 14:53 完成严格 TLS 并拿到 200，
+且当天 12:38 他的**游戏**也完整连通过。故障点在本机、且发生在调用我方 API **之前**。
+
+头号嫌疑（E2 已踩过）：`rollback-all.ps1` 把 hosts 里 11 条 **Steam 屏蔽行**恢复后未重跑
+`install-hosts.ps1` → Steam 登录/联机失败 → 游戏报连接失败，而 curl 仍通。
+
+排查单（可直接转发）：**`docs/STAGE2-E3-VOLUNTEER-TROUBLESHOOT-2026-11-22.md`** ——
+含一键收集脚本、逐项正常/异常含义、需要回传的三样东西（报错原文 + 精确时间点 + 收集输出）。
+
+> 下一步判据：拿到志愿者**尝试游戏的精确时间**后，在 A 机 access 日志按秒 grep。
+> 有记录 ⇒ 在游戏层（PlayFab/EAC/Party）；无记录 ⇒ 请求根本没发出（Steam/EAC/hosts 层）。
