@@ -77,7 +77,7 @@ class DiscoveryLobby:
             "leave": 0, "conflict": 0, "expired": 0, "expired_accounts": 0,
             "closed": 0, "closed_hit": 0,
             # 占位厅（member 先于 PUT）与真房主 PUT 接管占位的次数（2026-11-22 E3）
-            "provisional": 0, "takeover": 0,
+            "provisional": 0, "takeover": 0, "replaced": 0,
         }
         self._restore()
 
@@ -211,6 +211,12 @@ class DiscoveryLobby:
                     self._stats["conflict"] += 1
                     return None
             now = self._now()
+            # 同一账号换了一个新厅号 → 旧厅已死（客户端重启/重建大厅）：立刻回收。
+            # 否则旧厅残留成「僵尸厅」，好友映射可能指向它 → 好友只显示 Online、点加入无反应
+            # （2026-11-22 现场：同一账号残留 3 个厅，映射命中最早那个空壳厅）。
+            prev = (self._accounts.get(account) or {}).get("lobby_id")
+            if prev and prev != lobby_id:
+                self._retire_lobby_locked(prev, "replaced")
             # 成员是**服务端权威**：owner 客户端周期重发它自己那份（可能还没看到新成员）的
             # lobby body 时，不能把已加入的成员抹掉（2026-11-21 E2 实测：PUT 抹掉 join 后，
             # 加入方永远看不到自己在厅里 → 卡加载 + 90s 重试）。
@@ -375,6 +381,8 @@ class DiscoveryLobby:
             else:
                 # 兼容：没有 ids（纯 GET / 早期探针）→ 全部活跃厅 + owner/成员索引
                 for lobby_id, entry in self._lobbies.items():
+                    if _lobby_is_zombie(entry["body"]):
+                        continue
                     used.append(lobby_id)
                     identities = [entry["owner"]]
                     info = self._accounts.get(entry["owner"]) or {}
@@ -387,7 +395,9 @@ class DiscoveryLobby:
                             account_lobbies.append({"account": ident, "lobbyId": lobby_id})
                 if account and not any(a["account"] == account for a in account_lobbies):
                     account_lobbies.append({"account": account})
-            lobbies = [self._lobby_view_locked(lid) for lid in used if lid in self._lobbies]
+            lobbies = [self._lobby_view_locked(lid) for lid in used
+                       if lid in self._lobbies
+                       and not _lobby_is_zombie(self._lobbies[lid]["body"])]
             return {"accountLobbies": account_lobbies, "lobbies": lobbies}
 
     def account_keys(self, ids: list[str]) -> dict:
@@ -419,14 +429,25 @@ class DiscoveryLobby:
         return ""
 
     def _account_lobby_index_locked(self) -> dict[str, str]:
-        """accountId → lobbyId 索引：owner 的内部/真实身份 + 厅内所有成员的真实 ID。"""
+        """accountId → lobbyId 索引：owner 的内部/真实身份 + 厅内所有成员的真实 ID。
+
+        两条硬规则（2026-11-22 现场修）：
+          * **跳过空壳厅**（没有任何合法成员 id）—— 否则好友映射指向死厅，表现为只显示
+            Online、点加入没反应；
+          * **新厅优先** —— 同一账号可能残留多个历史厅号，旧的不能遮住当前的。
+        """
         index: dict[str, str] = {}
-        for lobby_id, entry in self._lobbies.items():
+        for lobby_id, entry in sorted(
+                self._lobbies.items(),
+                key=lambda kv: float(kv[1].get("updated") or 0.0), reverse=True):
+            body = entry["body"]
+            if _lobby_is_zombie(body):
+                continue
             info = self._accounts.get(entry["owner"]) or {}
             for ident in (entry["owner"], str(info.get("real_id") or "")):
                 if ident:
                     index.setdefault(ident, lobby_id)
-            for mid in _member_ids(entry["body"]):
+            for mid in _member_ids(body):
                 index.setdefault(mid, lobby_id)
         return index
 
@@ -439,10 +460,13 @@ class DiscoveryLobby:
         with self._lock:
             self._expire_locked()
             info = self._accounts.get(account)
-            if info and info.get("lobby_id"):
-                lobby_id = info["lobby_id"]
-                if self._lobbies.pop(lobby_id, None) is not None:
-                    self._remember_closed_locked(lobby_id, "left")
+            owned = [lid for lid, e in self._lobbies.items() if e.get("owner") == account]
+            if info and info.get("lobby_id") and info["lobby_id"] not in owned:
+                owned.append(info["lobby_id"])
+            for lid in owned:
+                if self._lobbies.pop(lid, None) is not None:
+                    self._remember_closed_locked(lid, "left")
+            if info:
                 info["lobby_id"] = None
             # 成员可能以「真实 accountId」写入，两个身份都算自己
             identities = {account}
@@ -492,6 +516,13 @@ class DiscoveryLobby:
                     info["lobby_id"] = None
 
     # ------------------------------------------------------------------ 终态 / 持久化
+    def _retire_lobby_locked(self, lobby_id: str, reason: str) -> None:
+        """回收一个厅：移出活跃表 + 记终态 tombstone（客户端据此立刻停止轮询）。"""
+        if self._lobbies.pop(lobby_id, None) is None:
+            return
+        self._remember_closed_locked(lobby_id, reason)
+        self._stats["replaced"] = self._stats.get("replaced", 0) + 1
+
     def _remember_closed_locked(self, lobby_id: str, reason: str) -> None:
         """把一个已消失的大厅记成 tombstone（客户端据此拿到终态而不是空对象）。"""
         if not lobby_id:
@@ -522,6 +553,10 @@ class DiscoveryLobby:
         with self._lock:
             self._expire_locked()
             hit = self._find_locked(key) if key else None
+            if hit is not None and _lobby_is_zombie(hit["body"]):
+                # 空壳厅 = 事实上的死厅：按「已关闭」回答，让客户端拿终态而不是空厅体
+                return {"kind": "closed", "lobby_id": str(hit["body"].get("lobbyId") or key),
+                        "reason": "empty", "closed_at": self._now()}
             if hit is not None:
                 self._stats["get"] += 1
                 self._stats["get_hit"] += 1
@@ -829,6 +864,16 @@ def requested_account_ids(payload: Any) -> list[str]:
         if ident:
             out.append(ident)
     return out
+
+
+def _lobby_is_zombie(body: Any) -> bool:
+    """「空壳厅」判定：厅里**没有任何合法成员 id**。
+
+    两种来源：① `clear()` 把成员 id 抹空后残留的厅；② 占位厅被接管过程中的半成品。
+    真实契约里这种厅不该出现在 `lobbies[]`（解析器要 players 里有可解析成员），
+    而且它会让好友映射指向死厅 —— 现场表现就是好友只显示 Online、点加入没反应。
+    """
+    return not _member_ids(body) if isinstance(body, dict) else True
 
 
 def _placeholder_player() -> dict:

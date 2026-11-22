@@ -185,7 +185,8 @@ def test_handler_routes_discovery_by_client_address(synthetic_capture: Path):
     assert login_a.source == "discovery:account_login"
     uuid.UUID(login_a.json()["sessionId"])
 
-    body = json.dumps(_lobby()).encode()
+    # 真实客户端的 PUT 一定带「自己 = host」那一项；players 全空的厅现在按空壳厅隐藏
+    body = json.dumps(_host_lobby(REAL_HOST_ID, "Host")).encode()
     put_a = h.handle("PUT", "/api/lobby", body, client_addr="10.0.0.1")
     assert put_a.status == 200 and put_a.source == "discovery:lobby_put"
     assert put_a.json()["lobbyId"] == LOBBY_ID      # echo_put=True
@@ -473,3 +474,55 @@ def test_handler_member_first_frame_is_not_empty(synthetic_capture: Path):
     assert doc.get("lobbyId") == PHANTOM_LOBBY
     assert doc.get("numLobbyMembers") == 1
     assert len(r.body) > 100, f"回包太小，像是空对象: {len(r.body)}B"
+
+
+# ------------------------------------------------ 僵尸厅回收（2026-11-22 现场修）
+SECOND_LOBBY = "44444444-5555-4666-8777-888888888888.r-00000004"
+
+
+def test_put_with_new_lobby_id_retires_previous():
+    """同一账号换新厅号 → 旧厅立刻回收（否则残留成僵尸厅，好友映射会指向它）。"""
+    svc, _ = _service()
+    acc = svc.account_for(client_addr="10.0.0.1")
+    svc.put(acc, _host_lobby(REAL_HOST_ID, "Host"))                    # LOBBY_ID
+    moved = _host_lobby(REAL_HOST_ID, "Host")
+    moved["lobbyId"] = SECOND_LOBBY
+    svc.put(acc, moved)                                                # 换到新厅号
+
+    assert svc.get(LOBBY_ID) is None, "旧厅应已被回收"
+    assert svc.get(SECOND_LOBBY) is not None
+    assert svc.resolve(LOBBY_ID)["kind"] == "closed"                   # 给客户端终态
+    assert svc.stats()["replaced"] == 1
+
+
+def test_accounts_ignores_zombie_lobby():
+    """空壳厅（成员 id 全被抹空）不得出现在 lobby/accounts：否则好友只显示 Online。"""
+    svc, _ = _service()
+    acc = svc.account_for(client_addr="10.0.0.1")
+    svc.put(acc, _host_lobby(REAL_HOST_ID, "Host"))
+    # 模拟 clear 抹空成员后的残留
+    body = svc._lobbies[LOBBY_ID]["body"]
+    body["players"] = [{"memberAccountId": "", "isHost": False, "hasInfo": False}]
+    body["memberAccountIds"] = []
+    body["numLobbyMembers"] = 0
+
+    view = svc.accounts(acc, ids={"ids": [REAL_HOST_ID]})
+    assert view["lobbies"] == []
+    assert "lobbyId" not in view["accountLobbies"][0]
+    assert svc.resolve(LOBBY_ID)["kind"] == "closed"
+    assert svc.resolve(LOBBY_ID)["reason"] == "empty"
+
+
+def test_accounts_index_prefers_newest_lobby():
+    """同一账号残留多个厅号时，映射必须指向**最新的**那个（旧厅不能遮住当前的）。"""
+    svc, _ = _service()
+    acc = svc.account_for(client_addr="10.0.0.1")
+    svc.put(acc, _host_lobby(REAL_HOST_ID, "Host"))                    # LOBBY_ID（较旧）
+    newer = _host_lobby(REAL_HOST_ID, "Host")
+    newer["lobbyId"] = SECOND_LOBBY
+    svc._lobbies[SECOND_LOBBY] = {"body": newer, "owner": acc,
+                                  "updated": svc._now() + 10, "provisional": False}
+
+    view = svc.accounts(acc, ids={"ids": [REAL_HOST_ID]})
+    assert view["accountLobbies"][0]["lobbyId"] == SECOND_LOBBY
+    assert [l["lobbyId"] for l in view["lobbies"]] == [SECOND_LOBBY]

@@ -370,6 +370,18 @@ def run_checks(transport, *, unknown_policy: str = "empty") -> list[dict]:
               and doc_m.get("numLobbyMembers") == 1 and len(body_m) > 100)
         add("C15 member 首帧回厅体", ok,
             f"status={st_m} source={src_m} bytes={len(body_m)} num={doc_m.get('numLobbyMembers')}")
+
+        # C16 同账号换新厅号后，旧厅立刻回收（否则残留成僵尸厅，好友映射指向死厅）
+        fresh = f"{uuid.uuid4()}.r-{uuid.uuid4().hex[:8]}"
+        st_n, _, src_n = ctx.req("PUT", "/api/lobby",
+                                 _lobby_body(fresh, REAL_JOIN_ID, "MOVED-HOST"), account=ctx.b)
+        st_old, body_old, _ = ctx.req("GET", f"/api/lobby/{ctx.lobby_b}", account=ctx.b)
+        doc_old = _json_body(body_old) or {}
+        # 旧厅必须**不再返回可加入的活厅体**；具体形态随 unknown_lobby 策略：
+        # error404 → 404；closed → 200 关闭态；empty → 200 {}
+        gone = st_n == 200 and (st_old == 404 or (st_old == 200 and not _members(doc_old)))
+        add("C16 换厅号回收旧厅", gone,
+            f"put={st_n} source={src_n} 旧厅GET={st_old} body={str(doc_old)[:60]}")
     finally:
         for acc in (ctx.a, ctx.b, ctx.c):
             try:
@@ -415,7 +427,8 @@ def main(argv: list[str] | None = None) -> int:
                                   insecure=args.insecure, cafile=args.cafile)
         mode = f"live {args.url}"
     else:
-        transport = _build_in_process()
+        # 进程内构建时让 handler 的策略与 --unknown-policy 一致，否则 C10 必然对不上
+        transport = _build_in_process(unknown_lobby=args.unknown_policy)
         mode = "in-process"
 
     print(f"[conformance] mode={mode} unknown_policy={args.unknown_policy} "
