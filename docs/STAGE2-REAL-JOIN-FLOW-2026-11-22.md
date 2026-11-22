@@ -39,9 +39,13 @@
 00:09:40.282  RemoveMember → 404                    （尝试移除未在厅成员）
 ```
 
-**关键否证**：整段过程中官方 API 侧**没有任何** `PUT /api/lobby`、`GET /api/lobby/<id>`、
-`POST /api/lobby/<id>/member` 请求（抓包目录里 88 份响应，lobby 相关只有 `accounts`）。
-→ 这三个端点的响应形状**不需要**复刻；它们只在 mock 当权威时才会被调用。
+**关于 `PUT /api/lobby` / `GET /api/lobby/<id>` / `POST .../member` 的边界（2026-11-22 更正）**：
+抓包目录里 lobby 相关只有 `accounts` 的响应体，**但这不能证明这三者没被调用** ——
+`capture_response` 对**空响应体直接 return**（`hooks/capture.py`：`if ... or not body: return`），
+所以空 body 的响应既不会落盘也不会留日志。而 `PUT /api/lobby` 的**响应本来就被游戏忽略**
+（HellForge 逆向：`game.dll 0x12cb5a0`，reply ignored），它的响应很可能就是空的。
+→ 准确表述：**没有抓到它们的非空响应体**；mock 仍需正常服务这三条（`PUT` 存 body、`member` 保活、
+`clear` 撤销），只是**响应形状不必复刻**。E2 里客户端确实调用过这三条（mock 日志有），说明客户端会调。
 
 ### 1.1 时序证明 connectionString 来自 accounts
 

@@ -94,8 +94,9 @@
 - 已在 2026-11-22 00:20 修好并部署 A 机：`login` 采集 `publicKey`、新增 `/api/Account/Keys`
   按真实 accountId 返回、`/api/lobby/accounts` 按 `ids` 同序回显、厅 body 补齐 21 个默认字段并
   固定 4 槽 players。一致性套件 14/14、`pytest` 153 passed、A 机 healthcheck PASS。
-- **同时否证**两条旧猜测：`state=1` 是合法的「在飞船」值（真实样本就是这样）；
-  官方 API 侧 `PUT /api/lobby`、`GET /api/lobby/<id>`、`POST .../member` 在真实成功链路里
-  **完全没有被调用**（它们只在 mock 当权威时才出现），其响应形状不需要复刻。
+- **同时否证**一条旧猜测：`state=1` 是合法的「在飞船」值（真实样本就是这样），mock 不该改写成 2。
+- **一处更正（2026-11-22）**：不能说 `PUT /api/lobby`、`GET /api/lobby/<id>`、`POST .../member`
+  「在真实链路里没有被调用」——抓包 hook 对**空响应体直接跳过**，而 `PUT` 的响应本来就被游戏忽略，
+  很可能就是空的。准确说法是「没抓到非空响应体，所以**响应形状不必复刻**」；这三条 mock 仍要正常服务。
 
 剩余未证：PlayFab Party 的 4104/4379、以及本次修复后双机是否能真正入舱 —— 需要 E3 复测。
