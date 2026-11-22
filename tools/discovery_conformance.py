@@ -70,7 +70,7 @@ class HttpTransport:
     """真实 HTTP(S)：支持 `--connect-to` 与 SNI 覆盖（经中继访问 A 机 nginx）。"""
 
     def __init__(self, url: str, *, host: str = "", connect_to: str = "",
-                 insecure: bool = False, timeout: float = 8.0):
+                 insecure: bool = False, timeout: float = 8.0, cafile: str = ""):
         assert url.startswith(("http://", "https://")), url
         self.secure = url.startswith("https://")
         rest = url.split("://", 1)[1]
@@ -86,6 +86,7 @@ class HttpTransport:
             self.connect_host = ch
             self.connect_port = int(cp or self.port)
         self.insecure = insecure
+        self.cafile = cafile
         self.timeout = timeout
 
     def request(self, method: str, path: str, body: bytes = b"",
@@ -101,7 +102,8 @@ class HttpTransport:
         sock = socket.create_connection((self.connect_host, self.connect_port), timeout=self.timeout)
         try:
             if self.secure:
-                ctx = ssl.create_default_context()
+                # Python 不走 Windows 证书存储：经中继访问 A 机时要显式给研究 CA
+                ctx = ssl.create_default_context(cafile=self.cafile or None)
                 if self.insecure:
                     ctx.check_hostname = False
                     ctx.verify_mode = ssl.CERT_NONE
@@ -389,6 +391,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--host", default="", help="SNI/Host 覆盖（经中继时用 api.live.prod…）")
     ap.add_argument("--connect-to", default="", help="实际连接地址 host:port")
     ap.add_argument("--insecure", action="store_true", help="跳过 TLS 校验")
+    ap.add_argument("--cafile", default="", help="显式信任根（如 state/certs-a/ca.cer；Python 不读 Windows 存储）")
     ap.add_argument("--unknown-policy", choices=("empty", "closed", "error404"), default="empty",
                     help="未知厅响应契约：empty={}；closed=200 关闭态；error404=HTTP 404（实机验证最佳）")
     ap.add_argument("--json-out", default="", help="把结果写到 JSON 文件")
@@ -396,7 +399,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.url:
         transport = HttpTransport(args.url, host=args.host, connect_to=args.connect_to,
-                                  insecure=args.insecure)
+                                  insecure=args.insecure, cafile=args.cafile)
         mode = f"live {args.url}"
     else:
         transport = _build_in_process()

@@ -19,3 +19,6 @@ raw-capture/
 kit/stage2/ca.cer
 kit/stage2/ca.crl
 kit/stage2/backup/
+
+# CRL 服务的 pid 落盘（tools/crl_serve.ps1 沿用 E2 包布局）
+tools/backup/
