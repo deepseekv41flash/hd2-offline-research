@@ -104,7 +104,8 @@ GET /Account/Keys?id=X
 
 ### 4.3 新增统计
 
-`keys_hit` / `keys_wait_hit` / `keys_bind_hit` / `keys_miss` —— 部署后能直接看出缝隙是否还存在。
+`keys_hit` / `keys_waited` / `keys_bind_hit` / `keys_miss` —— 部署后能直接看出缝隙是否还存在
+（`/health` 的 `discovery.stats` 里同名可见；`keys_waited` = 走等待路径后命中）。
 
 ### 4.4 持久化
 
@@ -175,4 +176,7 @@ GET /Account/Keys?id=X
 
 1. **实机复测**（唯一未验证项）：对方重启后**立刻**点加入 → 首次即成功；`keys_miss` 不增、
    `keys_bind_hit`/`keys_waited` 有增量。
+   → **作业单已就绪**：`STAGE2-RETEST-AB-2026-11-23.md`（准备 4 步 + 实机顺序 + 判据自动化）。
+   配套工具 `tools/stage2_retest.py`（`check`/`snapshot`/`judge`，全部只读）；A 机发现层已重置为全 0
+   （2026-11-23 14:00），缝隙方向与「不要测错方向」已在作业单 §1 写清。
 2. D（更早的 id 来源采集：`Mission/Session`、`ReportPosition`、`Operation/*` 纳入 `body_shapes.paths`）。
