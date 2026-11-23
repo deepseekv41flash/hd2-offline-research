@@ -508,3 +508,32 @@ consume 实现逐条落地我方口径：`amount -= amount`、下限 0、**保�
 
 **当用户游戏会话完成后需回给对方**：两个形状文件 + "字段→语义"解读 + `Achievements` 数组长度、
 `consume` 单次条数、consume 的 `mixId` 在基线库存样本里的 `amount`（实现 floor-0 与"是否删行"的实证依据）。
+
+### 10.15 采集暂停 + 解锁购买的真实写路径（旧仓 variant-net）；consume 语义存疑（2026-11-23 18:10）
+
+对方要求**暂停本机采集准备**（用户正在同一台机器做实机验收，hosts/443/CA 被占用；用户刚遇到 Error 60，
+原因是引擎 auto-renew 生成新 CA 但信任库留旧 CA，重装 CA 后恢复）。我方确认：只重签过研究仓内 `state/certs`、
+在 `127.0.0.1:18443` 短时起过临时 mock（已关），**未装 CA/未改 hosts/未占 443**，不影响其验收；
+我们原计划的"用户开一局采形状"**取消**（对方已配 `capture.req_paths` 自采）。
+
+**旧研究仓名字纠正**：是 `D:\mod\workariant-net`（非 hd2-network-proxy）。其中有两处**逐字节购买报文**：
+
+| 购买动作 | 请求 | 响应 |
+|---|---|---|
+| 武器/配件解锁 | `POST /api/Progression/ProgressionPackage/AcquireUnlockableItem`，135 B：`{"expectedCost":[{"mixId":3608481516,"amount":5000}],"itemMixId":718265621,"targetLevel":7,"packageId32":2221505542}` | 114 B：`{"packageId32":…,"inventoryChanges":[{"mixId":3608481516,"amount":-5000},{"mixId":718265621,"amount":1}]}` |
+| 战备解锁 | `POST /api/SeasonPass/item/buy`，102 B：`{"expectedCost":[{"mixId":1276729503,"amount":85}],"seasonPassItemId":919,"warId":801}` | 130 B：`{"items":[{"mixId":1276729503,"amount":-85},{"mixId":3859732805,"amount":1},{"mixId":905852432,"amount":85}],"packageProgress":[]}` |
+
+出处：`variant-net/docs/UNLOCK-MAP-2026-11-06.md` §3.1、`variant-net/docs/API-ENDPOINTS-2026-11-01.md` §8/§10、
+`variant-net/docs/OPS-PITFALLS.md`、`variant-net/tools/war_proxy.py`。
+⇒ **解锁/购买扣钱的权威数据在购买响应里**（负 amount = 扣、正 = 授予/记账）；建议 G5 **新增这两个响应钩子**，
+比只读 consume 请求体更贴近"解锁消耗"语义。
+
+**`inventory/consume` 语义存疑（与"购买扣钱"说法矛盾的数据）**：
+- 11-17 / 11-18 两次**完整启动抓包**（含军械库/商店/季票/邮件浏览）：`inventory/consume` **0 次**；
+- 只在 E3 打局会话出现 2 次：`15:23:30.417`（233 B，x-real-ip=12）与 `15:23:30.432`（194 B，x-real-ip=14），
+  两客户端间隔 15 ms，均在 `Mission/end`（15:23:30.561）**前约 10 秒**
+  ⇒ 与**结算/局内**强相关，不像军械库购买。
+⇒ 建议对方：consume 保留实现但**不要把语义写成"购买扣钱"**；等真实请求体 + 触发时机定论。
+
+**给对方的 Error 60 根因建议**：auto-renew 后**自动重装信任**（其已有 elevation 模块）或 GUI 强提示 + 一键重装，
+并记录 CA 变更历史（thumbprint + 时间），否则每 2 天续期都会复发。
