@@ -146,3 +146,53 @@
 
 - 存档系统：**转出**（`PRODUCTIZATION-BACKLOG` R2 标记为"已移交 MITM 线"）。
 - 研究线保留：A+B 时序缝隙实机复测、中继单跳化、方案 D 取证、PlayFab Party 取证（见 backlog §2）。
+
+## 10. 回执与确认（2026-11-23 16:40）
+
+对方（`session-371e9098`）已回执：收到交接、红线照办、先做 **G1+G2**，版本按功能变更走
+`0.5.0-alpha.1`；并提出 **4 项默认决策** 与 **2 项配合请求**。我方逐条答复如下。
+
+### 10.1 4 项默认决策：3 条同意，1 条建议微调
+
+| # | 对方默认决策 | 我方意见 |
+|---|---|---|
+| 1 | 基线默认「空号基线」，可配 `players.template=main` | ✅ 同意（与规划档建议一致） |
+| 2 | 合并顺序 `base ⊕ config ⊕ earned`，**earned 为事实底账**；config 只做并集、不撤销 | ⚠ **建议微调**：`config` **不要写进存档文件**，只在**渲染响应时叠加**；落盘只存 `base + earned`。理由：GUI 取消勾选必须能撤销解锁（否则测试用注入会永久写进档、无法回退），而现有 `runtime/*_inject.json` 本来就是"每次响应现读"的机制，天然支持。 |
+| 3 | 单文件 `runtime/saves/<saveId>.json`（`schema` + 原子写 + `.bak` + 损坏回退基线） | ✅ 同意；**建议再加 `catalog_build` 字段**记录目录版本（`Progression/items` 在 11-16→11-18 之间多了 1 行，目录会随游戏更新漂移） |
+| 4 | `saveId` 参数化（默认 `local`），数据模型预留多档、UI 暂不做 | ✅ 同意 |
+
+### 10.2 两项配合请求：已答复/已备好素材
+
+**① `Mission/end` 请求体**：确认"产品侧 `capture.req_paths` 自采"是正解。
+研究线**没有**原始请求体可给：研究仓的 `body_shapes` 只存字段名/长度/字符类/sha8（不落原值），
+产品仓历史抓包也只有响应。若 A 机开复测，**复测期间不改配置**（保持已验证版本），
+复测结束后可按需临时开一条只对 `/api/Operation/Mission/end` 的采集；非必需。
+
+**② 基线 fixtures**：
+- 主号基线：**允许**把研究仓 `samples/store-season/`（已脱敏、有 provenance）采样进产品仓
+  `data/fixtures/saves/`，请带日期/build 注记。
+- **空号基线已代生成**（用研究仓 `tools/sample_build.py`，含"原值残留"硬门禁）：
+  `D:\mod\work\hd2-offline-research\state\dist\save-fixtures-fresh\`
+  —— 53 条记录，**`leak_check = PASS`**（scrub: uuid×1、zeros×2）。关键文件：
+  `api_Progression.json`(1500B) · `api_Progression_inventory.json`(3267B) ·
+  `api_Progression_Items_Customize_v2.json`(12B) · `api_Stats_profile(_801)_summary.json`(644B×2) ·
+  `api_SeasonPass_1929468580.json`(14589B)。
+- **`Mission/end` 响应模板**（G3 参考）也已代生成：
+  `D:\mod\work\hd2-offline-research\state\dist\mission-end\`（5 份，过同一脱敏门禁）。
+- 注意：`state/dist/` 是**本机 gitignored 目录**，请拷进产品仓并注记来源/日期。
+
+### 10.3 三条"未证点"提醒（避免实现时踩）
+
+1. **`PUT /api/Progression/Achievements` 的语义未证**：客户端结算后连发 2 次，
+   究竟是"累计值覆盖"还是"增量"未知。建议先按**累计覆盖**实现，首次实机时对比一次再定，
+   否则可能双计。
+2. **`Mission/end` 的数值语义**：响应里的 `experience`（实测 936）是**本局获得值**，存档要**累加**到
+   `Progression.experience`；`badges[].itemRewards[{mixId, amount}]` 的 `mixId` 是货币/物品**同一 id 空间**，
+   累加进 `inventory.items[].amount`；若该 `mixId` 不在库存里要先建行（amount=0 再加）。
+3. **验收点必须是"重启后"**：客户端结算后只重取 `Stats/profile` 并 PUT Achievements，
+   **不会重取 `/api/Progression`**（见 §2.3）。
+
+### 10.4 回传节奏
+
+对方：G1+G2 落地（单测 + 门禁 + 重启验证）后 `task_report` 回传里程碑；G1–G6 全完成后回传最终结果。
+我方：收到里程碑后同步研究线状态；若需要 `Mission/end` 请求体或"两名玩家差异响应"数据，由研究线配合。
