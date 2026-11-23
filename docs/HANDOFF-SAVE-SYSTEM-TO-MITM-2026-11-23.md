@@ -223,3 +223,37 @@
 
 > 补充：这个办法**只对本地 MITM 成立**。研究线（mock 侧）不行——mock 返回的是回放体，
 > 里面的 `accountId` 是抓包样本的，不是调用者的（这也是"志愿者看到我的存档"镜像问题的来源之一）。
+
+### 10.6 G1 进度回执与口径确认（2026-11-23 16:45）
+
+对方回传：**G1 已落地**（`c5ef9fa` / `21ca26d` 已推 master）：`saves.py`（原子写 / `.bak` / 损坏隔离 /
+合并纯函数）、schema 升 **v2** 并加 `catalog_build` 与 `identity{hd2_account_id, steam_id}`、
+`set_catalog_build()` / `set_identity()` / `adopt_identity()` 就位；单测 20 条、全仓 **534 passed**、GATE=PASS。
+我方两条调整均已落实：**config 不落盘**（存档只存 `base + earned`）、**catalog_build 已加**。
+
+**对方就 `catalog_build` 口径提问，我方答复（实测数据）**：
+
+| 候选标识 | 实测 | 评价 |
+|---|---|---|
+| `Progression/items` **响应体 sha256[:8] + 行数** | 11-16 主号 / 11-17 空号 = `d71655e6` / 3020 行 / 559950B（逐字节相同）；11-18 主号 = `93e7575a` / 3021 行 / 560112B | ✅ **推荐主字段**（最精确的目录身份）；⚠ 必须取**注入前**的目录 |
+| 登录**请求体** `clientVersion` / `buildIdentifier` | `1007203` / 61 ascii（稳定到 build） | ✅ 推荐辅字段 |
+| `/api/lobby/accounts` 响应的 `buildGameHash` | `7256716030c211b1`（16 hex）；**空号 11-17 抓包无该端点** | ⚠ 可选，不保证每会话有 |
+| `layoutVersion` | `727`（WarSeason Status/warinfo） | ❌ 是 war 数据布局版本，**不是**游戏 build |
+
+建议格式：`"<items_sha8>/<items_rows>/<clientVersion>"`（缺段留空），例 `93e7575a/3021/1007203`。
+只记行数不够——行数可能相同而内容不同。
+
+**对方 G7 身份实测（用两份原始抓包）**：
+- `GET /api/Pes/GetMotd` → SteamID64：主号 登录后 **+42 s**、空号 **+24 s**；
+- `POST /api/Pes/GetMessages` → 20 位 HD2 账号 id：空号 **+3 m 09 s**；**主号 11-18 抓包整份没有该端点**。
+
+**我方建议（重要，会改对方已实现的优先级）**：把主键从「HD2 20 位优先」**反转**为
+「`steam_<SteamID64>` 优先，HD2 20 位作别名」。理由：GetMotd 每会话稳定有（E3 真实会话 46 分钟出现 7 次），
+GetMessages 不保证有；若以 HD2 为主键，同一玩家会因"这次没等到 20 位 id"而落到两份档、表现为进度丢失。
+配套要求：持久化 `identity_map{steam→hd2}`；若坚持 HD2 优先，则后出现时必须**合并迁入**并归档旧档。
+
+**另一条语义修正**：`adopt_identity()` 的「目标已存在则不覆盖」应改为「**目标已存在则合并**」，
+否则"先打一局（local 档）→ 身份到位 → adopt 跳过"会把那局经验静默丢掉。
+
+对方 fixtures 计划（只留 6 个存档端点、进度字段；README 记来源/日期/大小/行数）**同意**；
+身份值不入库，用 `items_sha8/rows` 记目录版本即可。
