@@ -86,6 +86,18 @@ python tools/e2_tunnel.py --servers-json C:/Users/Admin/.dsh/mcp-servers/ssh-mcp
   --via server2 --listen-host 100.67.88.219 --listen-port 443 --target 106.52.201.42:443
 ```
 
+> **可选单跳（2026-11-23 已实测，但不用于本轮验收）**：去掉服务器 B，改用 A 自己的 SSH，
+> 目标写 A 的回环 443 —— 少一跳、少一台服务器依赖，游戏 TLS 仍端到端：
+>
+> ```bash
+> python tools/e2_tunnel.py --servers-json .../servers.json --via default \
+>   --listen-host 100.67.88.219 --listen-port 443 --target 127.0.0.1:443
+> ```
+>
+> 为什么可行：实测确认被拦的是 **TLS SNI（游戏域名）**，不是 IP:443（`A:443 + 自有域名 SNI` → 200；`A:80 + Host=游戏域名` 明文 → 404 不拦）。
+> 延迟收益约 30 ms/请求（~12%），详见 `STAGE2-RELAY-OPTIMIZATION-2026-11-23.md`。
+> **本轮仍用上面经 B 的两跳命令**（E3 已验证两轮），单跳留作复测后的优化。
+
 ### 2.5 自检（8 项，应全 ✓）—— **必须在开游戏之前跑**
 
 ```bash
