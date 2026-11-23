@@ -104,6 +104,11 @@ python tools/e2_tunnel.py --servers-json C:/Users/Admin/.dsh/mcp-servers/ssh-mcp
 python tools/stage2_retest.py check
 ```
 
+> **开测前手工确认一次**（30 秒）：没有 TUN 虚拟网卡、没有开加速器/代理的 TUN 模式：
+> `Get-NetAdapter | ? { $_.InterfaceDescription -match "TUN|Wintun|TAP" }` 应为空。
+> 原因：实测商业加速/VPN 节点会**按域名**把 HD2 流量导到官方后端（见 RELAY-OPTIMIZATION §10），
+> 游戏会悄悄连官方服，排查成本极高。Clash 系统代理模式不受影响（游戏不读系统代理）。
+
 > `A01` 这一项只在**开游戏前**成立（要求 A 机发现层全 0）。我方进了船之后 `accounts≥1`
 > 是**我自己的账号**，不是污染——那时**不要再跑 check、更不要重置状态**，直接进 §2.6 拍基线。
 
@@ -117,6 +122,7 @@ python tools/stage2_retest.py check
 | E2E01 | 经中继完整 TLS + `GET /health` | 前面几项的连带结果 |
 | CERT01 | 服务端叶子剩余时间 | 已过期 → 必须重签（§6） |
 | A01 | A 机发现层净空 | 状态被污染 → 会让 B 兜底不触发（见 §7） |
+| （手工） | **无 TUN / 加速器接管** | 有 TUN 网卡或加速器在跑时，游戏流量可能被"按域名"导到官方后端（2026-11-23 实测商业节点行为），现象像"连不上" |
 
 ### 2.6 基线快照（必须在志愿者重启**之前**拍）
 

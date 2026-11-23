@@ -322,3 +322,23 @@ E3 mock 日志 8 次启动**全部**「Progression 先、GetMotd 后」（间隔
 
 **补充事实**：`/api/Progression/items` 是启动阶段**最先**出现的端点（+13/+15 s，早于 `/api/Progression` 3–4 s）
 ⇒ `catalog_build` 在**首次存档写入之前**就能拿到，不需要等到打开军械库。
+
+### 10.9 切档语义落地 + 回滚粒度隐患（2026-11-23 17:40）
+
+对方按 §10.8 的分情况口径实现（`f8e7165`，saves 单测 32、全仓 **546 passed**、GATE=PASS）：
+- `is_identified(doc)`：非 `local` 即已识别（只看 `save_id`，简单可审计）；
+- `switch_identity()` → `{action: same|merged|switched, …}`：旧档未识别 → `merged`（合并 + 归档 `.merged-<ts>`）；
+  旧档已识别且是别的档 → `switched`（不合并、旧档一字节不动、只切档 + `write_last()` + WARN）；
+- 引擎原语：`rollback_from_backup()`、`write_orphan()`（`runtime/saves/_orphan/<ts>-<src>.json`，不进扫描）、
+  `session_dirty` 由 G2 记录；`identity_strict` 本轮留接口语义、默认宽松。
+
+**我方指出的回滚粒度隐患（G2 实现前要定掉）**：若 `.bak` 只是"上一次保存的上一版"单槽，
+则「回滚到会话前」做不到——本局若写过 3 次，`.bak` 只退到第 2 次之前，残留是**部分写入**，比整档污染更难排查。
+建议三选一：① **会话首写快照** `runtime/saves/_session-start/<saveId>.json`（`session_dirty` false→true 时保存，
+身份一致/会话结束后清理），切档回滚用它；② 改"写前拷贝"语义，让 `.bak` 恒为"本次保存前"；③ 无快照（本局没写过）则不动档。
+另建议：`write_orphan()` 存**回滚前脏档全文**并记回滚后 hash，便于核对丢弃了哪些条；
+`identity` 里加 `source`（`getmotd`/`getmessages`/`adopted`）便于以后排查认档路径。
+
+**顺带**：复测作业单 `STAGE2-RETEST-AB-2026-11-23.md` §2.5 补了一条**手工预检**——
+开测前确认无 TUN 虚拟网卡 / 未开加速器 TUN 模式（依据 §10 的"按域名接管"实测）；
+并在 §7 风险里说明原因（否则游戏会悄悄连官方服，现象像"连不上"）。
