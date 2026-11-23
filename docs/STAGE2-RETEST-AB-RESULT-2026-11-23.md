@@ -125,5 +125,10 @@ systemctl daemon-reload && systemctl restart hd2-discovery   # 已还原 handler
 | 本机信任存储 | 已卸掉 A 机研究 CA `23ED103B…`（`CurrentUser\Root`）；产品 CA `B00398DB…` 全程未动 |
 | hosts | **未改动**（中继正好绑同一 IP:443，原行可直接复用）|
 | A 机 mock 代码 | 已还原为部署版本 `sha256 6d86d00b…`（临时延迟闸门撤除、systemd drop-in 删除）|
-| A 机发现层状态 | 待双方客户端退出后做最后一次 `rm state/discovery-state.json` + restart（客户端在线时会在数秒内重新注册）|
+| A 机发现层状态 | 已重置干净（`accounts/lobbies/bindings` 全空；healthcheck 探针清掉了）|
 | 通道交接 | 已通知 MITM 线「通道已还」并给还原清单，对方核对一致后已重启 alpha.2 引擎 |
+| **A 机证书重签** | 20:07 重签（新 CA + 新叶子，有效期至 **2026-11-25 20:07 本地**）：
+  CA 指纹 `83:0DE2:87:41:37:0F:29:5C:6A:C6:C6:98:9F:E5:9B:D5:7B:FD:E6`，
+  `ca.cer` sha256 `3637f23a…bf92b`、`ca.crl` sha256 `257db2a9…5d70e9`（本地 `state/certs-a/` 已更新）。
+  **明天志愿者只需替换这 2 个文件**（12 文件包其余不变）|
+| 代码提交 | `44e944b`（明文 mock）、`a7b0039`（复测结果 + C05 修正 + 延迟闸门）、`835cbba`（backlog/还原清单）；已 push 到 `origin/master` |
