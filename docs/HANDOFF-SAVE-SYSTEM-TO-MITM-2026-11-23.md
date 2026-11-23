@@ -537,3 +537,36 @@ consume 实现逐条落地我方口径：`amount -= amount`、下限 0、**保�
 
 **给对方的 Error 60 根因建议**：auto-renew 后**自动重装信任**（其已有 elevation 模块）或 GUI 强提示 + 一键重装，
 并记录 CA 变更历史（thumbprint + 时间），否则每 2 天续期都会复发。
+
+### 10.16 实机会话跑通（存档链全绿）+ 两份真实请求体形状（2026-11-23 18:30）
+
+对方在**官方服务器 + 单局 + 重启**下跑通（0.5.4-alpha.3）：
+- 身份 `saveId=steam_76561198968648344`（GetMotd）+ HD2 别名 `11893343864225233967`、`verified=true`；
+  `clientVersion=1007203`、`catalog_build=93e7575a/3021/1007203`；
+- 首装迁移 `local → steam_…`（**merged** 分支，旧档归档 `local.merged-20261123-181618.json`），未混档；
+- 结算入账 `MISSION +210 exp · 3608481516×910 · 897894480×1`（mission `e9f0440b…`, operation 1284），
+  与 `Mission/end` 响应逐字段一致；成就上报 4 条入账；统计 27 项（`totalEnemyKills` 已含本局），重启后无降级写入；
+- **"用户重启后感觉没变化"是正确结果**：官方服务器本来就保存进度 ⇒ 存档层只是"服务端给得更少时兜底"。
+  ⇒ 我方建议对方**按模式分列验收点**（官方模式=不干扰/不混档/不降级；mock/自建模式=打一局→重启→确实变多），
+  否则 alpha→rc 验收会被"没变化"误导。
+
+**两份真实请求体形状（对方实机采集，我方无需再开游戏）**：
+
+1. `POST /api/Progression/inventory/consume`（233 B，发生在 `Mission/end` **前 3 秒**）：
+   `{"consumedItems":[{"mixId":548295611,"amount":1},…5 个不同 mixId ×1],"boosters":[]}`
+   ⇒ 外壳是 **`consumedItems`**（不是 items/consumables），5 个 mixId **不是货币** ⇒ 与 §10.15 判断一致：
+   **局内消耗品结算上报**，不是购买扣钱。对方处理：补外壳、语义不写死、账本无该 mixId 则跳过（正确）。
+2. `PUT /api/Progression/Achievements`（141 B）：
+   `{"achievements":[{"value":1680,"id":6},{"value":386242,"id":8},{"value":4290,"id":17},{"value":2925,"id":24}]}`
+   ⇒ 与我方防御式解析吻合（`achievements[]` + `{id,value}`），**实际是 4 条**——我方此前"141 B ≈ 5–6 条"的
+   **估计作废**。复核：紧凑 110 B / 单行带空格 126 B / `indent=0` 138 B，**均对不上 141 B（差 15 B）**
+   ⇒ 真实报文可能还有未列出字段或不同空白/键序 ⇒ **不要按字节数反推条数**，解析一律走 JSON parser。
+
+**v0.5.5 购买响应入账（对方计划）我方三条提醒**：
+1. 增量需**幂等去重**：`inventoryChanges`/`items` 重复处理会双扣 ⇒ 用 (`packageId32`,`itemMixId`) 或
+   (`seasonPassItemId`,`warId`) + 短窗口（如 10 s）或 body-hash LRU。
+2. `SeasonPass/item/buy.items` 里 **`+85` 是 `medalsSpentMixId`（该战团已花奖章累计计数器）**，不是"获得奖章"。
+3. 购买请求 `expectedCost` 可作交叉校验/兜底；`targetLevel` 只是 UI 门槛（旧仓 §3.1 实证）。
+
+**Error 60**：对方确认根因（续期重新生成 CA 但信任库留旧 CA），处置为重导当前 CA；采纳我方三条建议
+（CA 变更历史 `certs/history.json`、续期未受信任时一键重装提示、有提权时不静默续期）。
