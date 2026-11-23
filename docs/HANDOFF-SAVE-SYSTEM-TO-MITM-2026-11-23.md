@@ -460,3 +460,29 @@ Assignment 两轮仅 GET、无写路径 ⇒ 暂只读不落账。
 - 前置：本地研究证书已过期（`state/certs` not_after 2026-11-23T03:52Z）⇒ 需重签本地证书 + 装 CA + 改 hosts
   （一次 UAC）；管线用 `state/tmp/shapes-probe/` 临时 profile 验证（未起服务：证书过期时 serve 直接拒绝）。
 - 已问对方是否还要加采其它端点（如 `Operation/Create`、`Mission/Start` 请求体），默认按上述 4 个。
+
+### 10.13 G6 完成 / v0.5.3-alpha.1；采集缩减为 2 端点（2026-11-23 17:45）
+
+对方 **G6（存档预演）完成并发布 `v0.5.3-alpha.1`**（zip sha256
+`8004a36faf195548ec69360e7ed36f92deea7f9e1eab3cb29777f56d18fe1456`），单测 631 → **644 passed**、GATE=PASS。
+`hd2proxy save-preview`：纯计算（不联网/不写盘/不依赖证书与 hosts），输入 `data/fixtures/saves/`，输出
+存档摘要、`main/fresh` × 3 类响应的逐项「旧值→新值」、结算投影（+936 经验/+物品/rewards 与 badges 来源/
+包进度按 max/结算后账本值）、以及未消费字段清单（`campaignWon`/`impact`/`multipliers`/`othersImpact*`/`repeatingPlayer`）。
+`repeatingPlayer` 已按我方结论**不落账**并记入 CHANGELOG/Release Notes。
+
+**采集清单缩减**：对方确认只需 **2 个请求体**——`POST /api/Progression/inventory/consume`、
+`PUT /api/Progression/Achievements`；Mission/end（G3 已按响应实现）、Account/Login（MITM 侧本就能读请求体）、
+Operation/Create、Mission/Start 都**不需要**。
+
+**⚠ 书面澄清（重要）**：对方想要"一次真实 consume 的前后库存对照"，**我们给不了真实 delta**——
+研究线 mock 是**静态回放**：`/api/Progression/inventory` 前后都返回同一份样本，不会因为 consume 而变。
+替代交付：consume 请求体形状（`{mixId, amount}`）+ 该 mixId 在**基线库存样本**里的 `amount`，
+足以实现 floor-0 与边界核对；真实 delta 需对方在产品线对真实服务器跑一次。
+
+**consume 口径建议（我方补充两点）**：
+1. **下限 0 后不要删行**——保留行、`amount=0`。理由：库存行在客户端里同时承担"是否拥有该物品"的语义
+   （研究线实证：**目录行 + 库存行成对**才显示），删行可能让物品从军械库消失；服务端是否删行我们无样本。
+2. 加 INFO 日志「consume mixId=X amount=Y，存档前 A → 后 B」，能带 `missionId` 更好（可与结算串起来）。
+
+**待用户的一次配合**：本地游戏会话 **5–10 分钟**（短任务快撤即可），一次采 consume + Achievements 两个形状；
+前置需重签本地研究证书（已过期）+ 装 CA + 改 hosts（一次 UAC）+ 起 mock。
