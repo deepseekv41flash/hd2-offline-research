@@ -447,10 +447,15 @@ def judge_snapshots(before: dict, after: dict, log_text: str | None = None) -> d
     else:
         add("C04", "双方都完成登录", FAIL, f"login Δ{dl('login')}：没有新登录")
 
-    # C05 双方都上报过身份（PUT /api/lobby）+ 双方都查过 Keys
-    ok5 = dl("put") >= 1 and dl("get") >= 1
-    add("C05", "双方上报身份且查过 Keys", OK if ok5 else FAIL,
-        f"put Δ{dl('put')}、get Δ{dl('get')}")
+    # C05 双方都上报过身份（PUT /api/lobby）+ Keys 解析至少成功一次
+    # 2026-11-23 修正：原判据用 `get`（= GET /api/lobby/<id>，大厅详情拉取）当"查过 Keys"，
+    # 是错的——查 Keys 的计数是 keys_hit/keys_bind_hit。"大厅详情拉取"是否发生取决于客户端
+    # 走哪条 UI 路径（镜像方向实测为 0 次），拿它当硬判据会把正常轮次判成 FAIL。
+    keys_ok = dl("keys_hit") + dl("keys_bind_hit") >= 1
+    ok5 = dl("put") >= 2 and keys_ok
+    add("C05", "双方上报身份且 Keys 有成功解析", OK if ok5 else FAIL,
+        f"put Δ{dl('put')}、keys_hit Δ{dl('keys_hit')}、keys_bind_hit Δ{dl('keys_bind_hit')}"
+        f"（lobby_get Δ{dl('get')} 仅供参考，不作判据）")
 
     # C06 加入被接受（/health 的 join 计数）
     add("C06", "加入被接受（join 增量）", OK if dl("join") >= 1 else FAIL,

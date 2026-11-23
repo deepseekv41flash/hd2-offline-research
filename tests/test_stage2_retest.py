@@ -330,3 +330,35 @@ def test_cli_judge_exit_codes(tmp_path, verdict, code, monkeypatch):
                                          "before": {}, "after": {}, "log_evidence": None})
     rc = rt.main(["judge", "--before", str(before), "--after", str(after)])
     assert rc == code
+
+
+# ---- C05 判据修正（2026-11-23 实机受控复现轮发现的问题） --------------------
+# 原实现把 `get`（= GET /api/lobby/<id>，大厅详情拉取）当成"查过 Keys"的代理，
+# 但查 Keys 的计数是 keys_hit/keys_bind_hit；大厅详情拉取是否发生完全取决于客户端
+# 走哪条 UI 路径（镜像方向实测 0 次），拿它当硬判据会把一轮正常加入判成 FAIL。
+
+def test_judge_c05_passes_without_lobby_get_when_keys_resolved():
+    """C05 应只看「双方都 PUT」+「Keys 有成功解析」，不要求 lobby_get。"""
+    after = _health(accounts=2, identities=2, keys_known=2, bindings=2,
+                    login=2, put=2, get=0, join=1, join_rejected=0,
+                    keys_hit=1, keys_bind_hit=1, keys_waited=1, keys_miss=0)
+    result = rt.judge_snapshots(BEFORE, after, log_text=MOCK_LOG)
+    assert _status(result, "C05") == rt.OK
+
+
+def test_judge_c05_fails_when_only_one_side_reported_identity():
+    """PUT 只有 1 次 ⇒ 只有一侧上报了身份，C05 仍应 FAIL。"""
+    after = _health(accounts=2, identities=2, keys_known=2, bindings=1,
+                    login=2, put=1, get=0, join=1, join_rejected=0,
+                    keys_hit=1, keys_bind_hit=0, keys_waited=0, keys_miss=0)
+    result = rt.judge_snapshots(BEFORE, after, log_text=MOCK_LOG)
+    assert _status(result, "C05") == rt.FAIL
+
+
+def test_judge_c05_fails_when_keys_never_resolved():
+    """双方都 PUT 了但 Keys 一次都没解析成功 ⇒ 公钥链路没走通，C05 FAIL。"""
+    after = _health(accounts=2, identities=2, keys_known=2, bindings=2,
+                    login=2, put=2, get=2, join=0, join_rejected=0,
+                    keys_hit=0, keys_bind_hit=0, keys_waited=0, keys_miss=2)
+    result = rt.judge_snapshots(BEFORE, after, log_text=MOCK_LOG)
+    assert _status(result, "C05") == rt.FAIL

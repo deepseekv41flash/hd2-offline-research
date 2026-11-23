@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -289,6 +290,14 @@ class MockHandler:
                 account = disc.account_for(client_addr=client_addr,
                                            account_hint=_account_hint(headers))
                 if name == "lobby_put":
+                    # 受控复现闸门（2026-11-23 A+B 复测）：MOCK_LOBBY_PUT_DELAY_MS > 0 时把
+                    # 「上报大厅」的处理延后，用来人为放大客户端上报窗口。默认不设 = 不生效。
+                    _delay_ms = os.environ.get("MOCK_LOBBY_PUT_DELAY_MS", "").strip()
+                    if _delay_ms:
+                        try:
+                            time.sleep(min(120.0, max(0.0, float(_delay_ms) / 1000.0)))
+                        except ValueError:
+                            pass
                     saved = disc.put(account, payload if isinstance(payload, dict) else {})
                     echo = bool(self.profile["lobby"].get("echo_put"))
                     return self._json(saved if (echo and saved is not None) else {},

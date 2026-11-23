@@ -122,7 +122,7 @@ GET /Account/Keys?id=X
 | 4 | 单测：真 `PUT` 覆盖 heuristic 绑定 | 以 PUT 学到的为准，不冲突 |
 | 5 | 单测：等待路径（另一个线程在等待期内完成 PUT） | 返回 key；`keys_wait_hit` +1 |
 | 6 | 一致性套件 C17：`Keys` 未命中时**不**返回错误 key（无候选时为空数组） | PASS |
-| 7 | 实机复测：对方重启后**立刻**点加入（不等它上报） | 首次点击即成功；`keys_miss` 不增 |
+| 7 | 实机复测：对方重启后**立刻**点加入（不等它上报） | **✓✓ 受控复现通过**（`keys_bind_hit`/`keys_waited` +1、`keys_miss` 0、join 成功、双人厅体 1278 B）；自然复现结构性不可行，见 `STAGE2-RETEST-AB-RESULT-2026-11-23.md` |
 
 ## 6. 风险与取舍
 
@@ -142,7 +142,7 @@ GET /Account/Keys?id=X
 | 绑定持久化（`bindings` 随状态落盘，TTL 6 h，账号消失即清） | **✓ 已实现** |
 | conformance C17（Keys 未命中回 200 空数组） | **✓ 已加** |
 | D（更早的 id 来源采集：Mission/Session、ReportPosition、Operation/*） | ⏳ 未做 |
-| 实机复测（对方重启后立刻点加入） | ⏳ 未做（等下一轮） |
+| 实机复测（对方重启后立刻点加入） | **✓✓ 受控复现通过（2026-11-23）**；自然复现 ⚠ 结构性不可行 |
 
 ### 7.1 实现要点（与设计一致的三处修正）
 
@@ -174,9 +174,12 @@ GET /Account/Keys?id=X
 
 ### 7.4 仍待办
 
-1. **实机复测**（唯一未验证项）：对方重启后**立刻**点加入 → 首次即成功；`keys_miss` 不增、
-   `keys_bind_hit`/`keys_waited` 有增量。
-   → **作业单已就绪**：`STAGE2-RETEST-AB-2026-11-23.md`（准备 4 步 + 实机顺序 + 判据自动化）。
-   配套工具 `tools/stage2_retest.py`（`check`/`snapshot`/`judge`，全部只读）；A 机发现层已重置为全 0
-   （2026-11-23 14:00），缝隙方向与「不要测错方向」已在作业单 §1 写清。
+1. ~~**实机复测**（唯一未验证项）~~ → **✓✓ 已验（2026-11-23，受控复现）**：
+   兜底路径在真实客户端上被触发（`keys_bind_hit +1`、`keys_waited +1`、`keys_miss 0`、`join +1`、
+   双人厅体 1278 B，判定 10/10 绿）。**但自然复现被证明结构性不可行**——客户端上报窗口 10 s，
+   而人能点「加入」要等进船过场动画（≈17 s），窗口永远先关；自然能撞上的是**房主方向**
+   （对方加入我），当天因对方客户端不持有我的 account id 而不可用。
+   全过程与四轮实录见 `STAGE2-RETEST-AB-RESULT-2026-11-23.md`。
+   → 复核命令：`tools/stage2_retest.py judge --before …health-before4.json --after …health-after-final.json --log-file …mock-watch.log`
+   ⚠ 注意：`/health` 统计是内存态，**重启服务即清零** ⇒ 判定必须在重启前拍 after 快照。
 2. D（更早的 id 来源采集：`Mission/Session`、`ReportPosition`、`Operation/*` 纳入 `body_shapes.paths`）。
