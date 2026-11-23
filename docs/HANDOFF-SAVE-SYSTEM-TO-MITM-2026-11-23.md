@@ -389,3 +389,41 @@ E3 mock 日志 8 次启动**全部**「Progression 先、GetMotd 后」（间隔
 
 **待用户拍板（不阻塞对方）**：产品侧「物品与战备 → 本地账号（仅本机视图）」改名 + 三条边界提示条；
 对方按 0.5.x 后续小版本处理。
+
+### 10.11 G3 完成 + v0.5.1-alpha.1；Achievements/G4 写路径答复（2026-11-23 17:20）
+
+对方 **G3 完成并发布 `v0.5.1-alpha.1`**（zip sha256
+`4c5307fa390d7de605ce4198adfdd9b810b6e72cfa5dc0d52d938e5fbdee6267`；`release-test/current` 已同步），
+单测 591 → **613 passed**、GATE=PASS；我方 4 条 G2 建议全部落地（pending 校验 saveId 有测试钉住 /
+`_rebase_done` 只重建一次基准 / discarded 货币给具体数值 / fixtures 增剥 `platformAccountId` + 字节守门）。
+
+**G3 实现**：新增 `engine/hooks/mission_end.py` 纯函数 `extract_increments`（只读响应）+
+`ActiveSave.record_mission_end()`：`experience` 累加；物品/货币按 `mixId` 累加进 `inventory_amounts`；
+`progressionPackageUpdates` 按 **max**（实测跨局递增：5→6 级、progress 65→323→459，判断为"服务端当前值"）；
+`campaignWon/impact/othersImpact*` 不碰；`missionId` 保留最近 20 局去重（防双计）；无 id 拒绝入账。
+**结算奖励口径实测**：5 份真实响应里 `rewards[3608481516] == sum(badges[].itemRewards[3608481516]) × 3`
+（倍数来自响应自身 `multipliers[0].factor=3`），而 `rewards[897894480]` 与明细相同（征用单不吃倍率）
+⇒ 判定 `rewards` 是服务端最终入账、`badges` 是明细；默认按 `rewards` 入账、缺失回退明细，
+开关收敛到 `mission_end.ITEM_SOURCE`，待实机对账一次。
+
+**对方问 `PUT /api/Progression/Achievements` 语义（累计覆盖 vs 增量），我方给的实测线索**：
+- E3 真实日志里那两次 PUT **不是同一客户端连发**：`x-real-ip` = 12 / 14（两个客户端），同一结算后 **44 ms** 内各一次；
+- 请求体均为 **141 B**、响应 `200 {}` 2 B；
+- 主号 `/api/Progression.achievements` 只有 **4 条**（id 6→1679、8→386201、17→4290、24→2924），
+  按 `{"achievements":[…],…}` 紧凑写法 = **110 B**；141 B 对应约 **5–6 条**
+  ⇒ 与"上报**完整小列表**"一致，与"只报本局增量"不一致。
+- 结论：倾向**累计覆盖**；建议落成 **per-key max**（单调计数器语义）：等效覆盖 + 幂等防双计 + 防旧快照回滚；
+  若要定论，实机开 `capture.req_paths` 抓该 141 B PUT 与同会话 achievements 对照（并观察是否有 value 变小）。
+
+**G4 写路径调查结果（供对方排期）**：
+- **SeasonPass 购买写路径 = `POST /api/SeasonPass/item/buy`** —— 实证就在**产品仓自己的**
+  `src/hd2proxy/engine/paths.py:98` 注释里（"真实解锁 = POST /api/SeasonPass/item/buy → 响应 items[] 里 +1，2026-11-06"）；
+  研究线 E3 两轮只有 `GET /api/SeasonPass` ×8，无购买动作。
+- **Assignment：两轮真实会话只有 GET**（`/api/v2/Assignment/War/{n}` ×17、`/api/v2/Assignment/Player` ×9），
+  **无任何写路径**；产品仓也无 Assignment 处理 ⇒ 合约进度大概率由服务端按结算自动推进、客户端只读
+  ⇒ 建议 Assignment 降到 G4 最低优先级（先只读+合并）。
+- 已知写路径总清单（E3 实测）：`Operation/Mission/end`（每局 1）、`Achievements` PUT（每客户端每局 1）、
+  `inventory/consume`（2）、`RedeemStoreContent` PUT（8）、`Items/Customize/v2` PUT、任务链
+  （Create/Abandon/Start/SetMaxRewards/Session/ReportPosition）。
+- G4 顺序同意对方建议（Stats/profile → SeasonPass → Assignment）；SeasonPass 的"购买写回"建议后置。
+- 互惠建议：对方把各钩子的 `unknown_keys` 定期给研究线，研究线用 mock 侧完整响应补语义。
