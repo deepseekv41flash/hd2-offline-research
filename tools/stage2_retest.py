@@ -317,12 +317,14 @@ def run_checks(*, relay_ip: str = DEFAULT_RELAY_IP, port: int = 443, domain: str
         logins = int(stats.get("login") or 0)
         bindings = int(d.get("bindings") or 0)
         if accounts == 0 and logins == 0 and bindings == 0:
-            add("A01", "A 机状态净空", OK, "accounts=0 login=0 bindings=0（B 兜底可触发）")
+            add("A01", "A 机状态净空", OK,
+                "accounts=0 login=0 bindings=0（B 兜底可触发；本条只在**开游戏前**有意义）")
         else:
             add("A01", "A 机状态净空", FAIL,
-                f"accounts={accounts} login={logins} bindings={bindings}：残留「已登录未上报」账号会"
-                f"让单未知候选 ≥2、B 兜底不触发",
-                "在 A 机：systemctl stop hd2-discovery → 删 state/discovery-state.json → start → 复查")
+                f"accounts={accounts} login={logins} bindings={bindings}：若我方游戏**还没登录**，"
+                f"这说明有残留「已登录未上报」账号，会让单未知候选 ≥2、B 兜底不触发",
+                "开游戏前才需要处理：systemctl stop hd2-discovery → 删 state/discovery-state.json "
+                "→ start → 复查；⚠ 我方已进船时 accounts≥1 是预期（那是自己），不要重置，直接拍 before 快照")
     return out
 
 
