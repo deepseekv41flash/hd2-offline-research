@@ -158,7 +158,21 @@ GET /Account/Keys?id=X
 | `pytest` | **169 passed**（新增 8 条：B 唯一候选/歧义不猜/A 等待命中/等待禁用即时/重登录新 key/错误猜测被清/绑定跨重启/现场场景验收） |
 | conformance | empty / closed / error404 三策略各 **17/17**（新增 C17） |
 
-### 7.3 仍待办
+### 7.3 部署与线上验证（2026-11-23 13:57）
 
-1. 部署到 A 机 + 实机复测「对方重启后立刻点加入」→ 判据 `keys_miss` 不增、首次点击成功；
-2. D（额外 path 采集）作为下一轮的取证动作。
+- 已部署 A 机（`mock/discovery.py`、`mock/handler.py`、`profiles/coop-discovery-nginx.json`、`tools/discovery_conformance.py`），
+  `systemctl restart` 后 `healthcheck.sh` **PASS**、线上一致性套件 **17/17 PASS**。
+- **线上实测 B**：探针账号只登录（只有 key、未上报 real_id）→ 另一端立刻 `GET /Account/Keys?id=<未知 id>`
+  → 返回该探针的 key（`live-probe-key-…`）⇒ 单未知绑定在部署环境生效。
+- **新增 `/health` 的 `discovery` 诊断块**（计数 + 统计，无任何账号标识）：
+  `{accounts, identities, keys_known, bindings, lobbies, tombstones, generation}` + `stats.keys_*`。
+  → 下一轮复测只需读 `/health` 的 `keys_miss` / `keys_bind_hit` / `keys_waited`。
+- ⚠ 线上注意：单未知绑定是**全局唯一候选**才生效；服务器上残留的「已登录未上报」探针账号会让候选 ≥2
+  从而**不触发**兜底。**实机复测前应清一次发现层状态**（停服 → 删 `state/discovery-state.json` → 起服）。
+- ⚠ C17 已改为契约式断言（200 + 数组 + 不回错 id），因为启用绑定后「幽灵 id 被绑到唯一未知账号」是**预期行为**。
+
+### 7.4 仍待办
+
+1. **实机复测**（唯一未验证项）：对方重启后**立刻**点加入 → 首次即成功；`keys_miss` 不增、
+   `keys_bind_hit`/`keys_waited` 有增量。
+2. D（更早的 id 来源采集：`Mission/Session`、`ReportPosition`、`Operation/*` 纳入 `body_shapes.paths`）。

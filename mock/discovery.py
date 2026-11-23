@@ -819,6 +819,20 @@ class DiscoveryLobby:
             out["persist"] = bool(self._persist_path)
             return out
 
+    def diagnostics(self) -> dict:
+        """健康检查用：计数 + 统计（**不含**任何账号/玩家标识，可安全暴露给探针）。"""
+        with self._lock:
+            return {
+                "stats": dict(self._stats),
+                "accounts": len(self._accounts),
+                "identities": sum(1 for i in self._accounts.values() if i.get("real_id")),
+                "keys_known": sum(1 for i in self._accounts.values() if i.get("public_key")),
+                "bindings": len(self._bindings),
+                "lobbies": len(self._lobbies),
+                "tombstones": len(self._tombstones),
+                "generation": self._generation,
+            }
+
     def dump(self) -> dict:
         """调试/日志用快照（脱敏：不含 IP 之外的个人信息）。"""
         with self._lock:

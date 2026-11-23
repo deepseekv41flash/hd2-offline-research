@@ -388,8 +388,12 @@ def run_checks(transport, *, unknown_policy: str = "empty") -> list[dict]:
         st_g, body_g, src_g = ctx.req("GET", f"/api/Account/Keys?id={ghost}", account=ctx.a)
         doc_g = _json_body(body_g) or {}
         keys_g = doc_g.get("accountKeys")
-        ok = (st_g == 200 and isinstance(keys_g, list) and keys_g == [])
-        add("C17 Keys 未命中回空数组", ok,
+        # 契约：200 + 数组；且**绝不返回别的 id 的 key**。
+        # 注：服务端启用了「单未知绑定」（设计档 §4），当恰好存在一个刚登录未上报身份的账号时，
+        # 会把幽灵 id 绑到它并返回该账号的 key —— 这是预期行为，所以此处不断言必须为空。
+        ok = (st_g == 200 and isinstance(keys_g, list)
+              and all((k or {}).get("platformAccountId") == ghost for k in keys_g))
+        add("C17 Keys 契约（200+数组+不回错 id）", ok,
             f"status={st_g} source={src_g} keys={keys_g}")
     finally:
         for acc in (ctx.a, ctx.b, ctx.c):

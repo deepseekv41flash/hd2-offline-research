@@ -408,6 +408,8 @@ class MockHandler:
             },
             "war_clock_now": timeshift.war_clock_now(self.anchors, self.now_fn()),
             "state": self.state.diagnostics(),
+            # 发现层诊断（计数 + 统计，不含任何账号/玩家标识）：下一轮复测直接读 keys_miss
+            "discovery": self.discovery.diagnostics() if self.discovery is not None else None,
             "unmatched": dict(sorted(self.unmatched.items())),
             "unknown_time_fields": sorted(f"{p}::{ptr}"
                                           for p, ptr in self.unknown_time_fields),
