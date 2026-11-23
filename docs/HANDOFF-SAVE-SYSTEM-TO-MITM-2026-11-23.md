@@ -297,3 +297,28 @@ E3 mock 日志 8 次启动**全部**「Progression 先、GetMotd 后」（间隔
 1. 合并语义按字段类型分开：单调量（experience/成就/终身统计）取 max；**可消耗量（货币/消耗品）以
    `updated_at` 较新档为准**（取 max 会把已花掉的钱复活）；集合类取并。
 2. `catalog_build` 末段为空时写 `-`（如 `93e7575a/3021/-`），避免下游 split 歧义。
+
+### 10.8 G2 准备件落地 + 「不一致切档」口径（2026-11-23 17:25）
+
+对方 G2 准备件已落地（`3985bb0`，单测 27、全仓 **541 passed**、GATE=PASS）：
+1. `_last.json` 乐观预绑定：`SaveStore.save()` 每次落盘原子刷新指针；引擎启动即预绑定 `activeSaveId`，
+   GetMotd 到达后校验、不一致则切档 + 显式日志；
+2. 无 last 时对**第一次** `/api/Progression` 最多等 1.0–1.5 s（mock 0.5–0.7 s 能等到；真实服务器退回 local，不挂起）；
+3. `find_save_by_hd2()`：只有 HD2 20 位时扫 `runtime/saves/*.json` 的 `identity` 块反查（零新增状态源）；
+4. 合并语义按字段分型：单调量 max / **可消耗量按 `updated_at` 较新档** / 覆盖量较新档 / 集合取并；
+5. `catalog_build` 缺段写 `-`（如 `93e7575a/3021/-`）。
+
+**对方问：GetMotd 不一致切档时，若旧 activeSave 本局已有写入，怎么办（A 合并归档 / B 切档+孤儿档）？
+我方口径：分两种情况，不能统一用 A**（判断依据 = 会不会把另一个玩家的进度灌进来）：
+
+| 旧 activeSave 性质 | 处理 |
+|---|---|
+| `local` / 未被识别过（首次运行） | **A**：合并进正确档 + 归档旧档（与本机同一人产生的写入，无第二身份，与 `adopt_identity` 一致） |
+| **另一个已识别的档**（如 `steam_A`，同机换号） | **不合并**：立即切档；若本局写过，用旧档 `.bak` **回滚到会话前状态**，差值另存 `runtime/saves/_orphan/<ts>-<src>.json`，打 WARN 日志（含旧/新档、回滚量、orphan 路径） |
+
+理由：**宁可丢"最多 ~42 s 窗口内的少量写入"，也不能跨玩家混档**。
+实现建议：内存记 `session_dirty`；`_orphan/` 纳入扫描排除；日志写明"首屏可能已按旧档渲染、本局不重取"，
+并写进产品 README/用户提示；可选 `saves.identity_strict`（身份未知/不一致时拒绝写入）比自动补救更安全。
+
+**补充事实**：`/api/Progression/items` 是启动阶段**最先**出现的端点（+13/+15 s，早于 `/api/Progression` 3–4 s）
+⇒ `catalog_build` 在**首次存档写入之前**就能拿到，不需要等到打开军械库。
