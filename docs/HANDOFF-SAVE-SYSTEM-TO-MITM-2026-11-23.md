@@ -486,3 +486,25 @@ Operation/Create、Mission/Start 都**不需要**。
 
 **待用户的一次配合**：本地游戏会话 **5–10 分钟**（短任务快撤即可），一次采 consume + Achievements 两个形状；
 前置需重签本地研究证书（已过期）+ 装 CA + 改 hosts（一次 UAC）+ 起 mock。
+
+### 10.14 G5 收尾 / v0.5.4-alpha.1；采集管线端到端验证完成（2026-11-23 17:55）
+
+对方 **G5 收尾（consume 扣减）完成并发布 `v0.5.4-alpha.1`**（zip sha256
+`0eb3849f9d765bd59043fa8b9f49d7e1b184847869f9b1233d4e1c153ea18d40`），
+单测 644 → **656 passed**、GATE=PASS；存档线 **G1–G6 功能齐全**。
+consume 实现逐条落地我方口径：`amount -= amount`、下限 0、**保留行不删**、只扣已跟踪 mixId（无基线不造数量）、
+形状不认识不扣、走 `update_earned()`（回滚/strict/orphan 自动参与）、INFO 对账日志带 `missionId`。
+
+**我方完成采集前置与管线验证（不动系统、未动 A 机）**：
+- 重签本地研究证书：`state/certs` 现 not_after **2026-11-25T09:31:52Z**（48h）、
+  self_check=OK、CA thumbprint `7D4B986E61ACF72579175BC6AB65F8E18647AEF3`；
+- 用临时 profile（`state/tmp/shapes-probe/profile.json`，含 2 个目标路径）起 `mockctl serve --dry-run`
+  于 `127.0.0.1:18443`，**curl 探针端到端验证通过**：两个端点均 200，产出形状文件 + `index.jsonl`；
+  假 body 演示：`consume` → `{"items":[{"mixId":number,"amount":number}]}`、
+  `Achievements` → `{"achievements":{"arr len":5,"item":{"id":number,"value":number}}}`；
+  **字符串原值不落盘（标记串只留 sha8）**。产物留在 `state/evidence/shapes-probe/`（gitignore）。
+- 剩最后一步（需用户配合）：装本地 CA（CurrentUser，无 UAC）+ 改 hosts（**一次 UAC**）+ 起 mock 于 443
+  + 用户开一局 5–10 分钟（短任务快撤即可）⇒ 采 `consume`/`Achievements` 的真实形状。
+
+**当用户游戏会话完成后需回给对方**：两个形状文件 + "字段→语义"解读 + `Achievements` 数组长度、
+`consume` 单次条数、consume 的 `mixId` 在基线库存样本里的 `amount`（实现 floor-0 与"是否删行"的实证依据）。
