@@ -168,18 +168,23 @@
 产品仓历史抓包也只有响应。若 A 机开复测，**复测期间不改配置**（保持已验证版本），
 复测结束后可按需临时开一条只对 `/api/Operation/Mission/end` 的采集；非必需。
 
-**② 基线 fixtures**：
-- 主号基线：**允许**把研究仓 `samples/store-season/`（已脱敏、有 provenance）采样进产品仓
-  `data/fixtures/saves/`，请带日期/build 注记。
-- **空号基线已代生成**（用研究仓 `tools/sample_build.py`，含"原值残留"硬门禁）：
-  `D:\mod\work\hd2-offline-research\state\dist\save-fixtures-fresh\`
-  —— 53 条记录，**`leak_check = PASS`**（scrub: uuid×1、zeros×2）。关键文件：
-  `api_Progression.json`(1500B) · `api_Progression_inventory.json`(3267B) ·
+**② 基线 fixtures**（用户已明确：**该会话本地运行，不需要脱敏**）：
+- **首选：直接用原始抓包（本地只读）**，不做任何变换：
+  主号 `D:\mod	mp\capture-store-season-20261118aw`；空号 `D:\mod	mp\capture-new-account-20261117aw`；
+  `Mission/end` 响应模板 `D:\mod\out\gwe`（12 份原始响应，研究线挑出的 5 份在
+  `state\dist\mission-end\`）。
+- 若想直接拿"按 mock 文件名规则整理好的"目录：**未脱敏版**已代生成
+  `D:\mod\work\hd2-offline-research\state\dist\save-fixtures-fresh-raw\`
+  —— 53 条记录，`--no-scrub`（scrub={}），与原始抓包内容一致。
+  （另有一份脱敏版 `save-fixtures-fresh/` 备查；两者仅 3 个 slug 不同：
+  `Account/Login.sessionId`、`Pes/GetMotd.accountId`、`Pes/GetMessages.accountId`，
+  其余 32 个同 slug 文件逐字节相同。保存语义相关字段在两版里完全一致。）
+- 关键文件（未脱敏版）：`api_Progression.json`(1500B) · `api_Progression_inventory.json`(3267B) ·
   `api_Progression_Items_Customize_v2.json`(12B) · `api_Stats_profile(_801)_summary.json`(644B×2) ·
   `api_SeasonPass_1929468580.json`(14589B)。
-- **`Mission/end` 响应模板**（G3 参考）也已代生成：
-  `D:\mod\work\hd2-offline-research\state\dist\mission-end\`（5 份，过同一脱敏门禁）。
-- 注意：`state/dist/` 是**本机 gitignored 目录**，请拷进产品仓并注记来源/日期。
+- 建议仍带 `日期 / buildIdentifier / catalog 行数` 注记（不为脱敏，只为**版本可追溯**——
+  `Progression/items` 目录在 11-16→11-18 之间多了 1 行）。
+- `state/dist/` 是研究仓本地 gitignored 目录，拷进产品仓时自带来源注记即可。
 
 ### 10.3 三条"未证点"提醒（避免实现时踩）
 
@@ -196,3 +201,25 @@
 
 对方：G1+G2 落地（单测 + 门禁 + 重启验证）后 `task_report` 回传里程碑；G1–G6 全完成后回传最终结果。
 我方：收到里程碑后同步研究线状态；若需要 `Mission/end` 请求体或"两名玩家差异响应"数据，由研究线配合。
+
+### 10.5 新发现：**本地 MITM 可以从响应里直接读到玩家 id**（对 G7 多存档有用）
+
+核对未脱敏 fixtures 时发现两个 Pes 端点返回的 `accountId` 是**两个不同 id 空间**：
+
+| 端点 | `accountId` 形态 | 是什么 |
+|---|---|---|
+| `POST /api/Pes/GetMotd` | 17 位数字，`7656119…` | **SteamID64** |
+| `POST /api/Pes/GetMessages` | 20 位数字，`138870…` | **HD2 账号 id**（与 `PUT /api/lobby` 的 `players[].platformAccountId` 同形态） |
+
+⇒ 对**本地 MITM 架构**，这意味着：proxy **不需要解析 Steam 票据**，只要读到这两个响应之一，
+就能知道"当前玩家是谁"。建议 G7（多存档）这样落：
+`saveId = HD2 账号 id（20 位，来自 GetMessages 或 lobby PUT）`，
+`SteamID64（来自 GetMotd）` 作为别名/展示用；两者都拿到时以 HD2 账号 id 为准。
+
+⚠ 两个待你验证的点：
+1. 这两个端点在真实会话里出现的**时机与频率**（我们只在抓包里看到它们各出现一次；
+   是否每次启动必出现、是否受"有消息/有 MOTD"影响，需要你在产品侧观察一次）；
+2. 若某次会话两个都拿不到，要有兜底 saveId（如 `local`），否则会分错档。
+
+> 补充：这个办法**只对本地 MITM 成立**。研究线（mock 侧）不行——mock 返回的是回放体，
+> 里面的 `accountId` 是抓包样本的，不是调用者的（这也是"志愿者看到我的存档"镜像问题的来源之一）。
