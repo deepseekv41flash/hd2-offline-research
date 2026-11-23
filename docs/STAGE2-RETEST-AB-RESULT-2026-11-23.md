@@ -116,3 +116,14 @@ systemctl daemon-reload && systemctl restart hd2-discovery   # 已还原 handler
 - A 机状态留存：`retest-20261123-state-round{1,2,3,4}.json`（各轮重置前的 `discovery-state.json`）
 - 工具：`tools/stage2_retest.py`（check/snapshot/judge）、`tools/e2_watch.py`、`mock/handler.py`（闸门）
 - 作业单：`docs/STAGE2-RETEST-AB-2026-11-23.md`；设计档：`docs/STAGE2-DESIGN-KEY-TIMING-GAP-2026-11-22.md`
+
+## 8. 环境还原（复测后，2026-11-23 20:05–20:10）
+
+| 项 | 动作 |
+|---|---|
+| 本机中继 / CRL / 日志跟随 | 全部停止；443 与 18081 均无监听 |
+| 本机信任存储 | 已卸掉 A 机研究 CA `23ED103B…`（`CurrentUser\Root`）；产品 CA `B00398DB…` 全程未动 |
+| hosts | **未改动**（中继正好绑同一 IP:443，原行可直接复用）|
+| A 机 mock 代码 | 已还原为部署版本 `sha256 6d86d00b…`（临时延迟闸门撤除、systemd drop-in 删除）|
+| A 机发现层状态 | 待双方客户端退出后做最后一次 `rm state/discovery-state.json` + restart（客户端在线时会在数秒内重新注册）|
+| 通道交接 | 已通知 MITM 线「通道已还」并给还原清单，对方核对一致后已重启 alpha.2 引擎 |
