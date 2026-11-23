@@ -342,3 +342,50 @@ E3 mock 日志 8 次启动**全部**「Progression 先、GetMotd 后」（间隔
 **顺带**：复测作业单 `STAGE2-RETEST-AB-2026-11-23.md` §2.5 补了一条**手工预检**——
 开测前确认无 TUN 虚拟网卡 / 未开加速器 TUN 模式（依据 §10 的"按域名接管"实测）；
 并在 §7 风险里说明原因（否则游戏会悄悄连官方服，现象像"连不上"）。
+
+### 10.10 G2 完成 + v0.5.0-alpha.1 发布（2026-11-23 17:05）
+
+对方 **G2 已完成并发布 `v0.5.0-alpha.1`**（prerelease；zip sha256
+`2830670ee1f570634f23abfde50df946322903997853f3b92f48ada2d9338545`；`release-test/current` 已同步）。
+单测 546 → **591 passed**，GATE=PASS（5 自检全过），引擎端到端新增：预置存档 → 引擎 →
+`/api/Progression` 返回 earned 合并值 + `/status.save` + 基准快照/pending 落盘。
+
+**交付要点**（与 §10.9 建议逐条对应）：
+- **回滚粒度 = 方案 1+3 组合**：回滚源为会话基准快照 `runtime/saves/_session-start/<saveId>.json`
+  （`_bind()` 时留），`.bak` 降级为写坏兜底；`session_dirty` 只由 **earned 写盘**置真（元数据写入不算脏）；
+  身份不一致且本局写过 → **整档回滚**（直接原子写回、不产生新 `.bak`）；本局没写过 → **不动档**；
+  本局新建的档回滚 = **删除**（不留空档占位）；`_last.json` 增 `pending` 块使基准**跨重启存活**
+  （带 **24h 新鲜度上限**，过期重新取基准）。
+- **orphan 审计加满**：回滚前脏档全文 + `restored_doc` + `doc_sha`/`restored_doc_sha` 双 hash +
+  `rollback_mode` + `discarded`（逐 key：标量给原值、容器给规模 + added/removed/changed 键名，截断）+
+  WARN 日志（脏档 hash → 恢复后 hash + orphan 路径）。
+- `identity.source`（getmotd/getmessages/adopted）+ `identity.identified_at`（只记第一次）；schema 仍 v2（加法兼容）。
+- `engine/active_save.py`：`_last.json` 乐观预绑定 → 首屏渲染 → GetMotd 校验分流；无历史首屏最多等
+  `saves.wait_seconds`（默认 1.2 s）；重复 GetMotd 不重复写盘（实测 46 分钟 7 次）；
+  `identity_strict`（默认关）= 身份未校验拒绝写盘。
+- `engine/hooks/progression.py`：**精确根路径**（不碰 `/inventory|items|levelspec|…`），合并
+  experience/onboarding/shipName/location/purchasedSeasonPassItems/achievements/packageProgress。
+- 响应路径记录：GetMotd→SteamID64、GetMessages→HD2 别名、items（注入前）→`catalog_build`、
+  Login 请求体→clientVersion ⇒ `catalog_build` 现为**完整三段**。
+- `/status` 增 `save` 块；GUI 战况页一行「存档 · 预绑定待校验/已校验 · 本局有写入」。
+- fixtures 落产品仓 `data/fixtures/saves/{main,fresh}/`（6 端点 ×2 账号，**不含身份/票据字段**；
+  items 只记签名 main `93e7575a`/3021、fresh `d71655e6`/3020）+ 守门测试 9 条。
+
+**对方就 G3 的提问与答复**：
+
+| 问题 | 答复 |
+|---|---|
+| G3 需要 `Mission/end` **请求体**吗？ | **不需要**（对 MITM 架构）。响应已含服务端算好的本局增量：`experience`、`badges[].itemRewards`、`lootedItemRewards`、`lootedHeavyItemRewards`、`levelUpRewards`、`progressionPackageUpdates`——累加落盘即可。请求体只在"自己算奖励（离线/自建服务端）"或"防篡改校验"时才需要。⇒ 先做"响应增量→earned"，请求体留作可选增强，不阻塞、不用麻烦用户打一局。 |
+| 结算后客户端会重取 `/api/Progression` 吗？ | **不会**。E3 两轮真实日志：8 次 `GET /api/Progression` 全部对应一次启动（每会话 1 次）；结算后没有新的 Progression 请求，只有 Stats profile ×2×2 + `PUT Achievements` ×2 + `Mission/Session`。⇒ **G3 效果 = 重启/回主界面后生效**；结算画面数字由响应驱动。 |
+
+**G3 提醒（避免踩坑）**：① 增量来源不止 `badges[].itemRewards`，还有 `lootedItemRewards` /
+`lootedHeavyItemRewards` / `levelUpRewards`，`rewards` 更像战果展示、别当库存写；② `progressionPackageUpdates`
+我们也没完全解析 ⇒ **不认识字段原样保留、只累加确定语义的字段**；③ `experience` 是**本局增量**，累加不覆盖。
+
+**我方对 G2 的四点小建议**：① `pending` 复用要校验 `pending.saveId == 本次预绑定 saveId`（换号别拿旧基准）；
+② 「身份一致→基准重建」在 GetMotd 多次出现时会让回滚点从"会话开始"漂移到"最后一次校验"，
+建议**只在会话首次校验一致时重建一次**；③ `discarded` 里对货币类（mixId/amount）单独标注；
+④ fixtures 不含身份/票据字段的做法正确。
+
+**待用户拍板（不阻塞对方）**：产品侧「物品与战备 → 本地账号（仅本机视图）」改名 + 三条边界提示条；
+对方按 0.5.x 后续小版本处理。
