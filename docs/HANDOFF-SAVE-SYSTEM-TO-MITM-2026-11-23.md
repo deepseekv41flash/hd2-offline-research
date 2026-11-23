@@ -427,3 +427,36 @@ E3 mock 日志 8 次启动**全部**「Progression 先、GetMotd 后」（间隔
   （Create/Abandon/Start/SetMaxRewards/Session/ReportPosition）。
 - G4 顺序同意对方建议（Stats/profile → SeasonPass → Assignment）；SeasonPass 的"购买写回"建议后置。
 - 互惠建议：对方把各钩子的 `unknown_keys` 定期给研究线，研究线用 mock 侧完整响应补语义。
+
+### 10.12 G4+G5 完成 / v0.5.2-alpha.1；请求体采集方案就绪（2026-11-23 17:35）
+
+对方 **G4（Stats/profile 终身统计）+ G5 上半（成就合并）完成并发布 `v0.5.2-alpha.1`**
+（zip sha256 `c6df4432315daa1ececacd1ac0b7720666738d54cbbca6ac9b162abfaeb47dd9`；
+`release-test/current` 已同步），单测 613 → **631 passed**、GATE=PASS。
+
+**G4 实现**：只认 `/api/Stats/profile/summary` 与 `/api/Stats/profile/801/summary`（内容相同），
+`/api/Stats/war/801/summary` 不碰（我们抓包里它两账号的差异来自**时间**造成的战况，不是账号态）；
+27 项 `totalXxx` 逐 key 取 **max**、只改已有键、全 0 不写盘、adopt 时也按 max 合并。
+**G4 其余两项收口（判断与实测一致）**：SeasonPass 元数据逐字节相同 ⇒ 无需单独落账
+（货币在 `inventory`、已购在 `Progression.purchasedSeasonPassItems`，G2 已合并）；
+Assignment 两轮仅 GET、无写路径 ⇒ 暂只读不落账。
+**G5 上半**：`PUT /api/Progression/Achievements` 只读请求体、落 `earned.achievements` 时 **per-key max**
+（我们的建议），请求体形状未采样 ⇒ 防御式解析（认 `{"achievements":[…]}` / `[…]` / `{"items":[…]}` /
+`{"values":[…]}`，行内认 `{id,value}`），解析不出就不写档。**consume 扣减暂缓**（响应恒 `{}`、扣减量只在请求体、
+无样本 ⇒ 不猜着扣）。
+
+**我方答复 `repeatingPlayer`**：研究线 12 份真实 `Mission/end` 响应里它**恒空**（`[]` ×6、`null` ×6），
+无任何非空样本 ⇒ **建议不落账**，等非空样本再议。
+
+**请求体采集方案（已把管线验证好）**：
+- 能力确认：`body_shapes` 在 `mock/server.py:346` 接线（profile 开 `enabled + paths` 即可），
+  B9 已用 curl 探针实证端到端；用假 body 跑出的形状样例证明粒度足够——
+  `inventory/consume` 顶层键/数值类型可见；`Achievements` 的 `{arr len=N, item:{id,value}}` **数组长度与元素键**可见。
+- **边界**：数字记**原值**（amount/计数/id，判断够用）；字符串只记长度/字符类/sha8，**不落原值**。
+  （若对方连数值也不想要，交付时可将数值替换为 `len`/区间。）
+- **真实形状必须有一次本地游戏会话**（约 10 分钟，**不需要志愿者**、**不依赖 A 机证书**）；
+  计划一次采 4 个：`inventory/consume`、`Achievements`、`Operation/Mission/end`（G3 备查）、
+  `Account/Login`（顺带验 `instanceId` 跨重启稳定性）。
+- 前置：本地研究证书已过期（`state/certs` not_after 2026-11-23T03:52Z）⇒ 需重签本地证书 + 装 CA + 改 hosts
+  （一次 UAC）；管线用 `state/tmp/shapes-probe/` 临时 profile 验证（未起服务：证书过期时 serve 直接拒绝）。
+- 已问对方是否还要加采其它端点（如 `Operation/Create`、`Mission/Start` 请求体），默认按上述 4 个。
