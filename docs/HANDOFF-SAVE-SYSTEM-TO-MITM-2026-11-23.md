@@ -257,3 +257,43 @@ GetMessages 不保证有；若以 HD2 为主键，同一玩家会因"这次没�
 
 对方 fixtures 计划（只留 6 个存档端点、进度字段；README 记来源/日期/大小/行数）**同意**；
 身份值不入库，用 `items_sha8/rows` 记目录版本即可。
+
+### 10.7 G1 修订确认 + ⚠ G2 的身份时序问题（2026-11-23 17:10）
+
+对方 G1 修订完成（`cb28799`）：`catalog_build` 按 `<items_sha8>/<items_rows>/<clientVersion>` 实现
+（`record_catalog()` 只接受**注入前**原始目录）；`saveId` 已反转为 `steam_<SteamID64>`、HD2 20 位作别名
+（`bind_identity()`）；`adopt_identity()` 改为「目标存在也合并」（earned 取并 / 金额取大 / 集合取并，
+旧档归档 `<saveId>.merged-<ts>.json`）；单测 22 条、全仓 **536 passed**、GATE=PASS。
+对方暂不做全局 `identity_map`（映射存在每份档的 `identity` 里，schema 已预留）。
+
+**我方复核发现一个会让 G2 失效的时序问题**（依据：两份原始抓包 + E3 真实会话日志）：
+
+启动阶段各端点首次出现（相对 Login，主号 11-18 / 空号 11-17）：
+
+| 相对 Login | 端点 |
+|---|---|
+| +13 / +15 s | `/api/Progression/items`（**最先**，且是 `catalog_build` 的数据源 ✓） |
+| **+16 / +19 s** | **`/api/Progression`**（第一次拉，决定首屏） |
+| +18 / +20 s | `/api/Progression/inventory` |
+| +19 / +22 s | `/api/Progression/Items/Customize/v2` |
+| +21 / +23 s | `/api/SeasonPass` |
+| +23 / +25 s | `/api/Stats/profile/summary` |
+| **+24 / +42 s** | **`/api/Pes/GetMotd`**（身份 SteamID64 在这里才出现） |
+| +189 s | `/api/Pes/GetMessages`（仅空号有；主号整份没有） |
+
+E3 mock 日志 8 次启动**全部**「Progression 先、GetMotd 后」（间隔 0.5–0.7 s，mock 快；真实抓包 5–26 s），
+且**一次会话只拉一次 `/api/Progression`**（下一次 = 下一次启动）。
+⇒ 若 G2 在「看到身份后」才决定 `saveId`，每局首屏的 Progression/inventory/SeasonPass/Stats 都会从
+`local` 档渲染，**且整局不重取** ⇒ 老玩家看到空进度（与已修的丢档同类）。
+
+**给出的 G2 策略**（已投递对方）：
+1. **乐观预绑定（主）**：启动即读 `runtime/saves/_last.json`（`last_save_id / last_steam_id / updated_at`），
+   先用它渲染；GetMotd 到达后校验，一致则继续，不一致（同机换号）切档 + 显式日志。
+2. **首拉短暂等待（辅）**：仅当无 last 记录（首次运行）时，对**第一次** `/api/Progression` 最多等 1.0–1.5 s；
+   真实服务器 5–26 s 等不到就走乐观/local，不要长时间挂起。
+3. `_last.json` 在身份确认/切换、adopt/merge 后原子刷新。
+
+**另两条小建议**：
+1. 合并语义按字段类型分开：单调量（experience/成就/终身统计）取 max；**可消耗量（货币/消耗品）以
+   `updated_at` 较新档为准**（取 max 会把已花掉的钱复活）；集合类取并。
+2. `catalog_build` 末段为空时写 `-`（如 `93e7575a/3021/-`），避免下游 split 歧义。
