@@ -325,13 +325,22 @@ class MockServer:
     """研究线 mock 服务端（443 TLS + 18081 CRL）。"""
 
     def __init__(self, handler: MockHandler, *, host: str, port: int,
-                 cert_dir: Path | str, log_dir: Path | str | None = None,
+                 cert_dir: Path | str | None, log_dir: Path | str | None = None,
                  log_headers: bool = False, crl_port: int = 18081,
-                 serve_crl: bool = True, trust_proxy_headers: bool = False):
+                 serve_crl: bool = True, trust_proxy_headers: bool = False,
+                 plaintext: bool = False):
         self.handler = handler
         self.host = host
         self.port = port
-        self.cert_dir = Path(cert_dir)
+        # 明文模式（给产品引擎的 upstreamTest 用）：不加载证书、不起 CRL、不抢 443。
+        self.plaintext = bool(plaintext)
+        if self.plaintext:
+            self.cert_dir = Path(cert_dir) if cert_dir else None
+            serve_crl = False
+        else:
+            if cert_dir is None:
+                raise ValueError("TLS 模式必须给 cert_dir（明文模式请传 plaintext=True）")
+            self.cert_dir = Path(cert_dir)
         self.log_dir = Path(log_dir) if log_dir else None
         log_path = (self.log_dir / "mock.log") if self.log_dir else None
         self.logger = _Logger(log_path)
@@ -347,7 +356,7 @@ class MockServer:
 
     # ---- 生命周期 ---------------------------------------------------------
     def start(self) -> "MockServer":
-        ctx = make_ssl_context(self.cert_dir)
+        ctx = None if self.plaintext else make_ssl_context(self.cert_dir)
         try:
             httpd = _ExclusiveHTTPServer((self.host, self.port), _ApiHandler)
         except OSError as exc:
@@ -357,7 +366,8 @@ class MockServer:
                 f"（Get-NetTCPConnection -State Listen -LocalPort {self.port}）"
             ) from exc
         httpd.daemon_threads = True
-        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        if ctx is not None:
+            httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
         httpd.mock = self.handler          # type: ignore[attr-defined]
         httpd.logger = self.logger          # type: ignore[attr-defined]
         httpd.log_headers = self.log_headers  # type: ignore[attr-defined]
@@ -373,8 +383,10 @@ class MockServer:
         # 统一在 start() 里起 serve_forever 线程 —— 这样 stop() 的 shutdown() 不会阻塞
         self._thread = threading.Thread(target=httpd.serve_forever, daemon=True, name="mock-http")
         self._thread.start()
+        scheme = "http" if self.plaintext else "https"
         self.logger.log(
-            f"[serve] https://{self.host}:{self.port} 证书={self.cert_dir} "
+            f"[serve] {scheme}://{self.host}:{self.port} "
+            f"证书={'-' if self.plaintext else self.cert_dir} "
             f"shaping={'on' if self.handler.profile['timeshift'].get('enabled') else 'off'}"
         )
         return self
@@ -410,27 +422,34 @@ class MockServer:
 
     # ---- 自检 -------------------------------------------------------------
     def local_probe(self) -> dict:
-        """用 Python ssl 客户端验一次 TLS 链路（不经过 Windows 信任存储）。"""
-        ctx = ssl.create_default_context(cafile=str(self.cert_dir / "ca.pem"))
+        """验一次链路（TLS 模式用 Python ssl 客户端，不经过 Windows 信任存储；明文模式裸 TCP）。"""
+        ctx = None
+        if not self.plaintext:
+            ctx = ssl.create_default_context(cafile=str(self.cert_dir / "ca.pem"))
         host_for_sni = self.handler.profile.get("host") or "api.live.prod.thehelldiversgame.com"
+        target = self.host if self.host != "0.0.0.0" else "127.0.0.1"
         results = {}
         for path in ("/health", "/api/WarSeason/current/WarId", "/api/Account/Login"):
             try:
-                with socket.create_connection((self.host if self.host != "0.0.0.0" else "127.0.0.1",
-                                               self.port), timeout=5) as sock:
-                    with ctx.wrap_socket(sock, server_hostname=host_for_sni) as tls:
+                with socket.create_connection((target, self.port), timeout=5) as sock:
+                    if ctx is not None:
+                        conn = ctx.wrap_socket(sock, server_hostname=host_for_sni)
+                    else:
+                        conn = sock
+                    with conn:
                         req = f"GET {path} HTTP/1.1\r\nHost: {host_for_sni}\r\nConnection: close\r\n\r\n"
-                        tls.sendall(req.encode())
+                        conn.sendall(req.encode())
                         data = b""
                         while True:
-                            chunk = tls.recv(65536)
+                            chunk = conn.recv(65536)
                             if not chunk:
                                 break
                             data += chunk
                 head, _, payload = data.partition(b"\r\n\r\n")
                 status = head.split(b" ")[1].decode() if head else "?"
                 results[path] = {"status": int(status) if status.isdigit() else status,
-                                 "bytes": len(payload), "ssl": "ok"}
+                                 "bytes": len(payload),
+                                 "ssl": "off" if self.plaintext else "ok"}
             except Exception as exc:  # noqa: BLE001
                 results[path] = {"error": repr(exc)}
         return results

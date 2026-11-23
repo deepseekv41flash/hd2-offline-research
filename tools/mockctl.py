@@ -132,28 +132,35 @@ def cmd_serve(args) -> int:
     elif (profile.get("body_shapes") or {}).get("enabled"):
         print("[serve] body_shapes 已由 profile 启用：只记 schema，不落原值")
     data_dir = Path(args.data) if args.data else _resolve(profile, "data_dir", "samples/store-season")
-    cert_dir = Path(args.cert_dir) if args.cert_dir else _resolve(
-        profile, "cert_dir", "state/certs")
     log_dir = Path(args.log_dir) if args.log_dir else _resolve(profile, "log_dir", "state/logs")
     bind = profile.get("bind") or {}
-    host = args.host or bind.get("host", "127.0.0.1")
-    port = args.port or int(bind.get("port", 443))
-    crl_port = int(bind.get("crl_port", 18081))
+    plain = bool(getattr(args, "plain", False))
+    if plain:
+        # 明文模式：给产品引擎的 upstreamTest: "host:port" 用，不碰 443、不碰证书、不起 CRL
+        cert_dir = None
+        host = args.host or "127.0.0.1"
+        port = args.port or 9099
+        crl_port = 0
+    else:
+        cert_dir = Path(args.cert_dir) if args.cert_dir else _resolve(
+            profile, "cert_dir", "state/certs")
+        host = args.host or bind.get("host", "127.0.0.1")
+        port = args.port or int(bind.get("port", 443))
+        crl_port = int(bind.get("crl_port", 18081))
+        problems = certs.preflight(cert_dir)
+        if problems:
+            print("[serve] 证书自检失败：")
+            for p in problems:
+                print("  -", p)
+            print(f"  先跑: python tools/mockctl.py cert-gen --dir {cert_dir}")
+            return 2
+        meta = certs.load_meta(cert_dir) or {}
+        print(f"[serve] 证书剩余 {certs.remaining_hours(cert_dir):.1f} h  CDP={meta.get('cdp_url')}")
+        if not certs.is_trusted(cert_dir, "CurrentUser") and not args.insecure_ok:
+            print("[serve] ⚠ 研究 CA 未装在 CurrentUser\\Root/ LocalMachine\\Root。"
+                  "装法（非管理员）: python tools/mockctl.py cert-install")
     if args.dry_run:
         host, port = "127.0.0.1", 18443
-
-    problems = certs.preflight(cert_dir)
-    if problems:
-        print("[serve] 证书自检失败：")
-        for p in problems:
-            print("  -", p)
-        print(f"  先跑: python tools/mockctl.py cert-gen --dir {cert_dir}")
-        return 2
-    meta = certs.load_meta(cert_dir) or {}
-    print(f"[serve] 证书剩余 {certs.remaining_hours(cert_dir):.1f} h  CDP={meta.get('cdp_url')}")
-    if not certs.is_trusted(cert_dir, "CurrentUser") and not args.insecure_ok:
-        print("[serve] ⚠ 研究 CA 未装在 CurrentUser\\Root/ LocalMachine\\Root。"
-              "装法（非管理员）: python tools/mockctl.py cert-install")
 
     mission_end_dir = Path(args.mission_end) if args.mission_end else REPO / "samples" / "mission-end"
     handler = _build_handler(data_dir, profile, mission_end_dir)
@@ -161,7 +168,8 @@ def cmd_serve(args) -> int:
     trust_proxy = bool(args.trust_proxy_headers or net_cfg.get("trust_proxy_headers"))
     srv = MockServer(handler, host=host, port=port, cert_dir=cert_dir, log_dir=log_dir,
                      log_headers=args.log_headers, crl_port=crl_port,
-                     serve_crl=not args.no_crl, trust_proxy_headers=trust_proxy)
+                     serve_crl=(not args.no_crl) and not plain,
+                     trust_proxy_headers=trust_proxy, plaintext=plain)
     try:
         srv.start()
     except RuntimeError as exc:
@@ -169,8 +177,13 @@ def cmd_serve(args) -> int:
         print(json.dumps(check_ports(host, port), ensure_ascii=False, indent=2))
         return 3
     probe = srv.local_probe()
-    print(f"[serve] TLS 自检: {json.dumps(probe, ensure_ascii=False)}")
-    print(f"[serve] data={data_dir}  host={host}:{port}  crl={'127.0.0.1:' + str(crl_port)}")
+    print(f"[serve] {'明文' if plain else 'TLS'} 自检: {json.dumps(probe, ensure_ascii=False)}")
+    scheme = "http" if plain else "https"
+    print(f"[serve] data={data_dir}  host={scheme}://{host}:{port}  "
+          f"crl={'127.0.0.1:' + str(crl_port) if crl_port else 'off'}")
+    if plain:
+        print("[serve] 明文模式：传给产品引擎的 upstreamTest 就是 "
+              f"\"{host}:{port}\"（例如 127.0.0.1:9099）；不要用它承载真实流量")
     print("[serve] Ctrl+C 停止；实验结束记得还原 hosts（hd2proxy.exe install 或手改）")
     import signal
 
@@ -305,6 +318,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="nginx 反代形态：账号归属改用 X-Real-IP / X-Forwarded-For（仅对端是回环时采信）")
     p.add_argument("--dry-run", action="store_true", help="绑 127.0.0.1:18443，不抢 443")
     p.add_argument("--insecure-ok", action="store_true", help="跳过未装信任的告警")
+    p.add_argument("--plain", action="store_true",
+                   help="明文 HTTP 模式（默认 127.0.0.1:9099）：给产品引擎 upstreamTest 用，"
+                        "不占 443、不加载证书、不起 CRL")
     p.set_defaults(fn=cmd_serve)
 
     p = sub.add_parser("health")
