@@ -49,6 +49,7 @@ SERVICE_NAME = "EasyAntiCheat_EOS"
 
 EAC_ALIVE_RATIO_MIN = 0.5   # 游戏在跑的时间里，EAC 进程至少一半样本可见
 DEFAULT_MIN_V8 = 3          # 少于 3 条 v8 不足以谈可见性（正常轮 12~15 条）
+DEFAULT_GRACE_S = 30.0      # 启动器出现后多久还没看到游戏 ⇒ 疑似卡死
 
 
 # ---------------------------------------------------------------- 采样
@@ -173,6 +174,28 @@ def command_v8_count(run_dir: Path) -> int:
     return len(cb.load_run(Path(run_dir))["v8"])
 
 
+def launch_verdict(launcher_ts: float | None, game_ts: float | None, now_ts: float,
+                   grace_s: float = DEFAULT_GRACE_S) -> dict | None:
+    """启动看门狗：从"进程出现时刻"判断这一轮是不是卡死了（纯函数，时间都用 epoch 秒）。
+
+    返回 None = 还在正常等待；否则 `{code, label, detail}`：
+      - `0 / game-appeared`           游戏已出现 ⇒ 正常，可以停止看门狗
+      - `2 / suspect-launcher-frozen` 启动器出现超过 grace 秒还没游戏 ⇒ 疑似死锁（第 1 次实战的真实故障）
+      - `2 / suspect-no-game`         grace 内启动器都没出现（只在有 `wait_s` 时才用）
+    """
+    if game_ts is not None:
+        return {"code": 0, "label": "game-appeared",
+                "detail": "游戏进程已出现，看门狗放行"}
+    if launcher_ts is not None:
+        elapsed = now_ts - launcher_ts
+        if elapsed > grace_s:
+            return {"code": 2, "label": "suspect-launcher-frozen",
+                    "detail": f"启动器已出现 {elapsed:.0f}s，游戏进程仍未出现"
+                              f"（阈值 {grace_s:.0f}s）⇒ 疑似冻结/死锁，建议立刻中止窗口"}
+        return None
+    return None
+
+
 def verdict(summary: dict, v8_count: int | None, min_v8: int = DEFAULT_MIN_V8) -> dict:
     """把摘要翻成三态结论（纯函数）。code: 0=链路活 / 2=链路断或缺流量 / 3=无游戏窗口。"""
     if not summary.get("game_windows"):
@@ -227,6 +250,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--verdict", help="只读模式：对已有 jsonl 判定")
     ap.add_argument("--run", help="配合 --verdict：capture 目录（数 v8 条数）")
     ap.add_argument("--min-v8", type=int, default=DEFAULT_MIN_V8, help="v8 最少条数")
+    ap.add_argument("--alert-file", help="采集模式：卡死看门狗报警写到这里（JSON，只写一次）")
+    ap.add_argument("--grace", type=float, default=DEFAULT_GRACE_S,
+                    help="启动器出现后多少秒没见到游戏就报警")
+    ap.add_argument("--abort-on-freeze", action="store_true",
+                    help="采集模式：判定疑似卡死后立即退出（不再空等）")
     args = ap.parse_args(argv)
 
     if args.summary or args.verdict:
@@ -250,11 +278,30 @@ def main(argv: list[str] | None = None) -> int:
     n = max(1, int(round(args.duration / max(args.interval, 0.2))))
     import time as _time  # noqa: PLC0415
 
+    launcher_ts = None
+    game_ts = None
+    alerted = False
     with out.open("w", encoding="utf-8") as fh:
         for i in range(n):
             s = sample(ps)
             fh.write(json.dumps(s, ensure_ascii=False) + "\n")
             fh.flush()
+            if launcher_ts is None and s["launcher"]:
+                launcher_ts = _time.time()
+            if game_ts is None and s["game"]:
+                game_ts = _time.time()
+                print("[watchdog] 游戏进程已出现，看门狗放行", flush=True)
+            lv = launch_verdict(launcher_ts, game_ts, _time.time(), args.grace)
+            if lv and lv["code"] == 2 and not alerted and args.alert_file:
+                alerted = True
+                Path(args.alert_file).parent.mkdir(parents=True, exist_ok=True)
+                Path(args.alert_file).write_text(
+                    json.dumps({"t": s["t"], **lv}, ensure_ascii=False, indent=1),
+                    encoding="utf-8")
+                print("[watchdog] ALERT %s " % lv["label"] + lv["detail"], flush=True)
+                if args.abort_on_freeze:
+                    print("[watchdog] --abort-on-freeze ==> 提前结束采样", flush=True)
+                    break
             g = s["game"][0]["pid"] if s["game"] else "-"
             print(f"[{i + 1}/{n}] {s['t']} game={g} eac={'Y' if s['eac_pid'] else 'N'} "
                   f"svc={s['eac_service']} conns={s['conns']['established']}", flush=True)

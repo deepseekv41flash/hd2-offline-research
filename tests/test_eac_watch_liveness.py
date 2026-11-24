@@ -231,3 +231,52 @@ def test_read_jsonl_skips_broken_lines(tmp_path: Path):
     got = wl.read_jsonl(p)
     assert [x["t"] for x in got] == ["a", "b"]
     assert wl.read_jsonl(tmp_path / "missing.jsonl") == []
+
+
+# ---------------------------------------------------------------- 启动看门狗（早终止）
+def test_launch_verdict_waiting_before_grace():
+    assert wl.launch_verdict(100.0, None, 110.0, grace_s=30) is None
+
+
+def test_launch_verdict_flags_frozen_launcher():
+    """第 1 次实战的真实故障：启动器冻死、游戏永不出现 ⇒ 30 s 就必须报警。"""
+    v = wl.launch_verdict(100.0, None, 131.0, grace_s=30)
+    assert v["code"] == 2 and v["label"] == "suspect-launcher-frozen"
+    assert "31" in v["detail"]
+
+
+def test_launch_verdict_passes_when_game_appears():
+    v = wl.launch_verdict(100.0, 104.0, 200.0, grace_s=30)
+    assert v["code"] == 0 and v["label"] == "game-appeared"
+
+
+def test_launch_verdict_nothing_yet():
+    assert wl.launch_verdict(None, None, 999.0, grace_s=30) is None
+
+
+def test_watchdog_end_to_end_writes_alert(tmp_path: Path, monkeypatch):
+    """真跑采集循环：启动器出现后 grace 秒没有游戏 ⇒ 写报警文件并（可选）提前退出。"""
+    alert = tmp_path / "alert.json"
+    t = {"now": 1_000.0}
+
+    monkeypatch.setattr(wl, "now_iso", lambda now=None: "2026-11-25T01:45:%05.2f" % (t["now"] % 60))
+    monkeypatch.setitem(wl.__dict__, "_load_psutil", lambda: FakePs(procs=_procs(launcher=[21260]),
+                                                                   conns={}))
+
+    import time as _t
+    monkeypatch.setattr(_t, "time", lambda: t["now"])
+    monkeypatch.setattr(_t, "sleep", lambda s: t.__setitem__("now", t["now"] + s))
+
+    def fake_sample(ps=None, now=None):
+        return {"t": wl.now_iso(), "game": [], "launcher": [{"pid": 21260}],
+                "eac_pid": [], "eac_service": "stopped",
+                "conns": {"total": 0, "established": 0, "remote443": 0, "remote_ips": []}}
+    monkeypatch.setattr(wl, "sample", fake_sample)
+
+    out = tmp_path / "w.jsonl"
+    code = wl.main(["--out", str(out), "--duration", "60", "--interval", "5",
+                    "--alert-file", str(alert), "--grace", "10", "--abort-on-freeze"])
+    assert code == 0
+    assert alert.exists()
+    data = json.loads(alert.read_text(encoding="utf-8"))
+    assert data["label"] == "suspect-launcher-frozen"
