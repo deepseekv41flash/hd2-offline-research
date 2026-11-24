@@ -56,6 +56,10 @@ BASELINE_GLOBS = {
     "stats_profile_war": "*_api_Stats_profile_801_summary.json",
     "customize_v2": "*_api_Progression_Items_Customize_v2.json",
 }
+AUTO_BASELINES = {
+    "fresh": "state/dist/save-fixtures-fresh-raw",   # 空号基线（新玩家）
+    "main": "samples/store-season",                   # 主号基线（导入/演示）
+}
 BASELINE_SHA_RECIPE = 'sha256("endpoint:sha256\n" 按端点名排序拼接)'  # 与产品侧发布说明一致
 
 
@@ -100,6 +104,19 @@ def resolve_mission_end_template(path_arg: str | None) -> Path | None:
         except Exception:  # noqa: BLE001
             continue
     return cands[0] if cands else None
+
+
+def detect_baseline_id(export_dir: Path) -> str:
+    """从导出目录里任一玩家的 manifest 读 `source.baselineId`（用于 --auto-baseline）。"""
+    for man_path in sorted((Path(export_dir) / "players").glob("*/manifest.json")):
+        try:
+            man = json.loads(man_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        bid = str((man.get("source") or {}).get("baselineId") or "")
+        if bid:
+            return bid
+    return ""
 
 
 def key_order(obj) -> list[str]:
@@ -437,7 +454,10 @@ def format_text(report: dict) -> str:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="校验 save-export 产物是否符合自建服契约（只读）")
     ap.add_argument("--export", default=None, help="导出根目录（含 players/ 与 index.json）")
-    ap.add_argument("--baseline", default=None, help="基线抓包目录（空号或主号）")
+    ap.add_argument("--baseline", default=None,
+                    help="基线抓包目录（空号或主号）；与 --auto-baseline 二选一")
+    ap.add_argument("--auto-baseline", action="store_true",
+                    help="按导出 manifest 的 source.baselineId 自动选研究仓现成基线（fresh/main）")
     ap.add_argument("--shape-ref", default=None,
                     help="参照基线（基线里某些数组为空时，用它学元素形状；通常给另一套基线）")
     ap.add_argument("--mission-end-template", default=None,
@@ -464,8 +484,18 @@ def main(argv: list[str] | None = None) -> int:
                   "verdict": "PASS" if not failed else "FAIL"}
         print(json.dumps(report, ensure_ascii=False, indent=1) if args.json else format_text(report))
         return 0 if report["verdict"] == "PASS" else 1
+    if args.export and args.auto_baseline and not args.baseline:
+        bid = detect_baseline_id(Path(args.export))
+        if bid not in AUTO_BASELINES:
+            ap.error(f"manifest.baselineId={bid!r} 没有内置基线映射；请显式给 --baseline（内置: {sorted(AUTO_BASELINES)}）")
+        args.baseline = AUTO_BASELINES[bid]
+        # shape-ref 取另一套基线（用于空数组的元素形状参照）
+        other = next((v for k, v in AUTO_BASELINES.items() if k != bid), None)
+        if other and not args.shape_ref:
+            args.shape_ref = other
+        print(f"[auto] baselineId={bid} → baseline={args.baseline}、shape-ref={args.shape_ref}")
     if not args.export or not args.baseline:
-        ap.error("需要 --export 与 --baseline（或用 --settlements-file 单独校验事件流）")
+        ap.error("需要 --export 与 --baseline（或用 --auto-baseline / --settlements-file 单独校验事件流）")
     report = check(Path(args.export), Path(args.baseline),
                    Path(args.shape_ref) if args.shape_ref else None,
                    Path(args.mission_end_template) if args.mission_end_template else None)

@@ -368,3 +368,28 @@ def test_settlements_source_required_and_counter_consistent(tmp_path: Path):
     assert any(c["id"].startswith("J11") and c["status"] == "FAIL" for c in bad)
     good = vse.check_settlements(p2, expected=EXPECTED, counters={"ledgerOnly": 1})
     assert all(c["status"] == "PASS" for c in good)
+
+
+# ---- 一键验收：--auto-baseline（2026-11-24 收口用） --------------------------
+
+def test_detect_baseline_id_from_manifest(tmp_path: Path):
+    base = _write_baseline(tmp_path / "base")
+    prog, inv, stats, man = _ideal()
+    exp = _write_export(tmp_path / "exp", progression=prog, inventory=inv, stats=stats, manifest=man)
+    man = json.loads((exp / "players" / "76561198968648344" / "manifest.json").read_text(encoding="utf-8"))
+    man["source"]["baselineId"] = "fresh"
+    (exp / "players" / "76561198968648344" / "manifest.json").write_text(
+        json.dumps(man, ensure_ascii=False), encoding="utf-8")
+    assert vse.detect_baseline_id(exp) == "fresh"
+
+
+def test_auto_baseline_unknown_id_errors(tmp_path: Path, capsys):
+    base = _write_baseline(tmp_path / "base")
+    prog, inv, stats, man = _ideal()
+    exp = _write_export(tmp_path / "exp", progression=prog, inventory=inv, stats=stats, manifest=man)
+    m = json.loads((exp / "players" / "76561198968648344" / "manifest.json").read_text(encoding="utf-8"))
+    m["source"]["baselineId"] = "custom:weird"
+    (exp / "players" / "76561198968648344" / "manifest.json").write_text(
+        json.dumps(m, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        vse.main(["--export", str(exp), "--auto-baseline"])

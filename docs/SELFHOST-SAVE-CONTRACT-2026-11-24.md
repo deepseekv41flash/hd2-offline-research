@@ -377,3 +377,32 @@ J08 ts 为 ISO8601 带显式时区 ✓   J09 来源枚举合法 ✓
 我方校验器 23 条测试、全量 **252 passed**。
 
 后续候选（不阻塞）：`shared/` 公共数据拆分开关；事件流加 `purchase`/`consume`（`schema`/`event` 位已留）。
+
+## 13. 一键验收命令（可选的外部发版前检查）
+
+产品侧提议"导出目录 + 基线 → 退出码 + 报告"作为发版前的外部验收一环。**已经是现成的一条命令**，
+本版再加了 `--auto-baseline` 让它真正"一键"（从导出 manifest 的 `source.baselineId` 自动选研究仓基线）：
+
+```bash
+# 一键：自动识别 fresh/main 基线，并自动用另一套基线做元素形状参照
+python tools/validate_save_export.py --export D:/mod/tmp/save-export-sample-mission --auto-baseline
+# 退出码 0=PASS / 1=FAIL；--json 输出机器可读报告（可接 CI）
+```
+
+等价的显式写法（不想依赖自动识别时）：
+
+```bash
+python tools/validate_save_export.py \
+  --export  <导出根目录> \
+  --baseline state/dist/save-fixtures-fresh-raw \   # 或 samples/store-season
+  --shape-ref samples/store-season                  # 空数组元素形状参照（空号基线用）
+```
+
+**覆盖范围**（每个玩家各跑一遍）：导出整体 M01–M07（身份/manifest 自描述/基线哈希可复算/逐文件一致）、
+F01–F09（键集键序/数组元素键/inventory 行元素/可选端点/mission_end 三件套）、
+V01–V05（库存只抬不降、统计单调、counts 自检、mission_end 语义）、事件流 J01–J11（逐行/身份/去重/
+数值与 packages 形状/时区/来源枚举/source 覆盖与计数/游标）。
+
+**当前实测**：A `save-export-sample-mission` **38/38**、B `save-export-sample-ledgeronly` **35/35**，
+一键模式下同样全绿（`--auto-baseline` 自动选 `fresh` + `main` 参照）。
+**建议**：把它作为**发版前可选外部检查**（不进门禁也可），一行命令 + 退出码即可判定。
