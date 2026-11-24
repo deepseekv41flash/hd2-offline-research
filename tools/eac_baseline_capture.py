@@ -4,73 +4,71 @@
 背景：EAC 的反作弊上报走 `POST /anticheat/v8/games/client/message/`（octet-stream，
 约每 12 s 一条、持续整局），与 EOS 共用 host `api.epicgames.dev`（见
 `docs/EAC-NET-ATTRIBUTION-2026-11-25.md`）。要判断"注入后被察觉"，先要有**干净会话的
-上报指纹**（长度序列 + 间隔序列 + 原始字节），否则无从对比。
+上报指纹**（长度序列 + 间隔序列 + 原始字节）。
 
-本脚本只做四件事：
-  1. 把系统/进程代理由**用户自己**确认后指向我们的 MITM（可 `--dry-run` 先看计划）；
-  2. 起 `tools/mitm_proxy.py`：对 `api.epicgames.dev` 的 `/anticheat/*` **落完整原始字节**，
-     其余域名只记 schema（沿用 T6a 的"不落原值"纪律）；
-  3. 并行起 `tshark` 抓 loopback，取 **JA3 / SNI / TLS 版本**（客户端指纹，注入后若突变是早期信号）；
-  4. 采集结束后产出 `index.jsonl`（每条：ms 时间戳/长度/文件/sha256）+ `meta.json` + `README.md`。
+★ 为什么用 hosts 而不是系统代理（2026-11-25 与 EAC-off 线实测对齐）：
+  EOS/EAC 的 HTTP 栈是**直连**（源地址是物理网卡，不经本机 7897），IE 代理与
+  `HTTP(S)_PROXY` env 都**抓不到**它；反过来把系统代理指向我们的 MITM 会把
+  全系统 WinINET 流量卷进来，副作用大。所以改成：**hosts 把目标 host 指到本机 + 我们签的
+  证书做 TLS 终结 + 忠实转发到真实 IP**（这条路 T6a 已验证"游戏正常跑通"）。
 
-**不做**：不改游戏文件、不注入、不阻断、不伪造任何应答（R2/R6 已证伪造即死）。
+本脚本做四件事（**必须以管理员运行**，因为要改 hosts）：
+  1. 解析并记录目标 host 的**真实 IP**（改 hosts 之前解析），逐行备份 hosts；
+  2. hosts 加行 → 目标指向 `127.0.0.1`，刷新 DNS；
+  3. 起 `tools/mitm_proxy.py --tls-listen 127.0.0.1:443`（冒充该 host，转发到真实 IP，
+     对 `/anticheat/` **落完整原始字节**，其余只记 schema）；并行起 `tshark` 抓 loopback
+     取 **JA3/SNI**；
+  4. `--duration` 后收尾：停进程 → **逐行还原 hosts** → 刷新 DNS → 产
+     `index.jsonl` / `meta.json`（含 hosts diff、真实 IP、CA 指纹"未卸载"）。
 
 用法（**先把游戏关掉**，脚本起来后再启动游戏）：
 
-    python tools/eac_baseline_capture.py \
-        --out-dir state/evidence/eac-antichat-baseline-<ts> \
-        --duration 300 --dry-run          # 先看计划
-    python tools/eac_baseline_capture.py \
-        --out-dir state/evidence/eac-antichat-baseline-<ts> --duration 300
+    # 先看计划（不改任何东西）
+    python tools/eac_baseline_capture.py --out-dir D:/mod/tmp/eac-baseline --dry-run
+    # 正式采集（管理员 shell 里跑；会改 hosts）
+    python tools/eac_baseline_capture.py --out-dir D:/mod/tmp/eac-baseline --duration 300
 
-结束后按 `README.md` 里的判据看：`index.jsonl` 的 `req_len` 序列与 `dt_ms` 序列就是"上报指纹"。
+**不做**：不改游戏文件、不注入、不阻断、不伪造任何应答（R2/R6 已证伪造即死）。
 """
 
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
-import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+HOSTS_PATH = Path(r"C:\Windows\System32\drivers\etc\hosts")
 
-# 本期只关心这两类；官方 API 与 modules-cdn 只统计不落原值
 ANTICHEAT_HOST = "api.epicgames.dev"
 ANTICHEAT_PATH_RE = r"^/(anticheat/v[0-9]+/|anticheat)"
-INTERCEPT_HOSTS = [
-    "api.epicgames.dev",
-    "modules-cdn.eac-prod.on.epicgames.com",
-    "api.live.prod.thehelldiversgame.com",
-    "974a9.playfabapi.com",
-]
-GAME_API_HOST = "api.live.prod.thehelldiversgame.com"
 MODULES_HOST = "modules-cdn.eac-prod.on.epicgames.com"
-
-TSHARK_CANDIDATES = [
-    r"C:\Program Files\Wireshark\tshark.exe",
-    r"C:\Program Files (x86)\Wireshark\tshark.exe",
-]
+GAME_API_HOST = "api.live.prod.thehelldiversgame.com"
+DEFAULT_REDIRECT = [ANTICHEAT_HOST]
+TSHARK_CANDIDATES = [r"C:\Program Files\Wireshark\tshark.exe",
+                     r"C:\Program Files (x86)\Wireshark\tshark.exe"]
 
 
 # ---------------------------------------------------------------- 纯函数（可离线测）
 def build_index(jsonl_path: Path) -> list[dict]:
-    """把 mitm_proxy 的 jsonl 转成"上报指纹"索引：只保留 anticheat 请求/响应条目。
+    """把 mitm jsonl 转成"上报指纹"索引：只保留 anticheat 请求/响应条目。
 
-    每条记录输出：
-      ts / dt_ms（与同方向上一条的间隔）/ direction / req_len / resp_len /
-      file（若落了原始字节）/ sha256 / truncated
+    输出字段：ts / ts_ms / dt_ms（同方向与上一条的间隔）/ direction / len / status /
+              file（原始字节文件）/ sha256 / truncated
     """
     rows: list[dict] = []
     prev: dict[str, int] = {}
-    if not Path(jsonl_path).exists():
+    p = Path(jsonl_path)
+    if not p.exists():
         return rows
-    for line in Path(jsonl_path).read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -87,8 +85,7 @@ def build_index(jsonl_path: Path) -> list[dict]:
         raw = {d.get("direction"): d for d in (rec.get("raw") or [])}
         for direction in ("req", "resp"):
             item = raw.get(direction) or {}
-            blob = (rec.get(direction) or {})
-            length = int(rec.get("%s_len" % direction) or blob.get("bytes") or 0)
+            length = int(rec.get("%s_len" % direction) or 0)
             dt = (t_ms - prev[direction]) if (t_ms and direction in prev) else None
             if t_ms:
                 prev[direction] = t_ms
@@ -104,7 +101,6 @@ def build_index(jsonl_path: Path) -> list[dict]:
 
 
 def _ts_to_ms(ts) -> int:
-    """`HH:MM:SS(.mmm)` 或 ISO 时间 → epoch 毫秒（当天内足够用于算间隔）。"""
     if not ts:
         return 0
     s = str(ts)
@@ -113,8 +109,7 @@ def _ts_to_ms(ts) -> int:
             return int(time.mktime(time.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")) * 1000)
         parts = s.split(":")
         if len(parts) == 3:
-            h, m, sec = int(parts[0]), int(parts[1]), float(parts[2])
-            return int(((h * 60 + m) * 60 + sec) * 1000)
+            return int(((int(parts[0]) * 60 + int(parts[1])) * 60 + float(parts[2])) * 1000)
     except Exception:  # noqa: BLE001
         return 0
     return 0
@@ -122,15 +117,13 @@ def _ts_to_ms(ts) -> int:
 
 def summarize(rows: list[dict], *, started: str, ended: str,
               game_pid: int | None = None) -> dict:
-    """会话元信息 + 指纹序列（长度/间隔），供注入前后做差分。"""
+    """会话元信息 + 指纹序列（长度/间隔），供注入前后差分。"""
     reqs = [r for r in rows if r["direction"] == "req"]
     resps = [r for r in rows if r["direction"] == "resp"]
     dts = [r["dt_ms"] for r in reqs if r["dt_ms"] is not None]
     return {
-        "started_at": started, "ended_at": ended,
-        "game_pid": game_pid,
-        "anticheat_requests": len(reqs),
-        "anticheat_responses": len(resps),
+        "started_at": started, "ended_at": ended, "game_pid": game_pid,
+        "anticheat_requests": len(reqs), "anticheat_responses": len(resps),
         "req_len_series": [r["len"] for r in reqs],
         "dt_ms_series": dts,
         "dt_ms_min": min(dts) if dts else None,
@@ -143,7 +136,6 @@ def summarize(rows: list[dict], *, started: str, ended: str,
 
 
 def count_hosts(jsonl_path: Path) -> dict:
-    """对照统计：各 host 的请求条数/字节数（含 game API、modules-cdn 是否发生）。"""
     out: dict[str, dict] = {}
     p = Path(jsonl_path)
     if not p.exists():
@@ -163,62 +155,38 @@ def count_hosts(jsonl_path: Path) -> dict:
     return out
 
 
-# ---------------------------------------------------------------- 系统代理（可 dry-run）
-def snapshot_ie_proxy() -> dict:
-    """读当前 HKCU WinINET 代理设置（只读）。"""
-    import winreg
-    key = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
-    out = {}
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as k:
-        for name in ("ProxyEnable", "ProxyServer", "ProxyOverride", "AutoConfigURL"):
-            try:
-                out[name] = winreg.QueryValueEx(k, name)[0]
-            except FileNotFoundError:
-                out[name] = None
-    return out
+def hosts_diff(original: str, restored: str) -> dict:
+    """逐行 diff：确认收尾把 hosts 还原干净（回执要求写进 meta）。"""
+    o = original.splitlines()
+    r = restored.splitlines()
+    return {"identical": o == r, "original_lines": len(o), "restored_lines": len(r),
+            "missing": [ln for ln in o if ln not in r][:10],
+            "extra": [ln for ln in r if ln not in o][:10]}
 
 
-def apply_ie_proxy(server: str) -> None:
-    import winreg
-    key = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key, 0, winreg.KEY_SET_VALUE) as k:
-        winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, 1)
-        winreg.SetValueEx(k, "ProxyServer", 0, winreg.REG_SZ, server)
-
-
-def restore_ie_proxy(saved: dict) -> None:
-    import winreg
-    key = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key, 0, winreg.KEY_SET_VALUE) as k:
-        if saved.get("ProxyEnable") is not None:
-            winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, int(saved["ProxyEnable"]))
-        for name in ("ProxyServer", "ProxyOverride", "AutoConfigURL"):
-            val = saved.get(name)
-            if val is None:
-                continue
-            winreg.SetValueEx(k, name, 0, winreg.REG_SZ, str(val))
-
-
-def extract_ja3(tshark: str, pcap: Path, out_tsv: Path) -> int:
-    """从 loopback pcap 抽 JA3/SNI/TLS 版本（ClientHello 明文，无需解密）。返回行数。"""
-    if not Path(pcap).exists():
-        return 0
-    cmd = [tshark, "-r", str(pcap),
-           "-Y", "tls.handshake.extensions_server_name",
-           "-T", "fields",
-           "-e", "frame.time_epoch", "-e", "ip.dst", "-e", "tcp.dstport",
-           "-e", "tls.handshake.extensions_server_name",
-           "-e", "tls.handshake.ja3", "-e", "tls.handshake.ja3_full",
-           "-e", "tls.handshake.version"]
+# ---------------------------------------------------------------- hosts / 权限
+def is_admin() -> bool:
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:  # noqa: BLE001
-        return 0
-    lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
-    if lines:
-        header = "time_epoch\tdst_ip\tdst_port\tsni\tja3\tja3_full\ttls_version"
-        out_tsv.write_text(header + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
-    return len(lines)
+        return False
+
+
+def resolve_real_ip(host: str) -> str | None:
+    """改 hosts **之前**解析真实 IP（之后解析会得到 127.0.0.1）。"""
+    try:
+        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+        v4 = sorted({i[4][0] for i in infos if i[0] == socket.AF_INET})
+        return v4[0] if v4 else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def flush_dns() -> None:
+    try:
+        subprocess.run(["ipconfig", "/flushdns"], capture_output=True, timeout=20)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def find_tshark() -> str | None:
@@ -228,76 +196,109 @@ def find_tshark() -> str | None:
     return shutil.which("tshark")
 
 
+def extract_ja3(tshark: str, pcap: Path, out_tsv: Path, port: int) -> int:
+    """从 loopback pcap 抽 JA3/SNI（ClientHello 明文，无需解密）。"""
+    if not Path(pcap).exists():
+        return 0
+    cmd = [tshark, "-r", str(pcap), "-Y", "tls.handshake.extensions_server_name",
+           "-T", "fields",
+           "-e", "frame.time_epoch", "-e", "ip.dst", "-e", "tcp.dstport",
+           "-e", "tls.handshake.extensions_server_name",
+           "-e", "tls.handshake.ja3", "-e", "tls.handshake.ja3_full",
+           "-e", "tls.handshake.version"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except Exception:  # noqa: BLE001
+        return 0
+    lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
+    if lines:
+        header = "time_epoch\tdst_ip\tdst_port\tsni\tja3\tja3_full\ttls_version"
+        out_tsv.write_text(header + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
+    return len(lines)
+
+
 # ---------------------------------------------------------------- 主流程
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="EAC 上报基线采集（零注入）")
+    ap = argparse.ArgumentParser(description="EAC 上报基线采集（零注入，hosts 重定向）")
     ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--duration", type=int, default=300, help="采集秒数（默认 300）")
-    ap.add_argument("--proxy-port", type=int, default=18092)
+    ap.add_argument("--duration", type=int, default=300)
+    ap.add_argument("--hosts-file", default=str(HOSTS_PATH))
+    ap.add_argument("--redirect", default=",".join(DEFAULT_REDIRECT),
+                    help="要重定向到本机的 host（默认 api.epicgames.dev）")
+    ap.add_argument("--listen-port", type=int, default=443, help="本机 TLS 终结端口（默认 443）")
     ap.add_argument("--cert-dir", default=str(REPO / "state" / "certs-eac"))
-    ap.add_argument("--hosts", default=",".join(INTERCEPT_HOSTS))
     ap.add_argument("--dump-limit", type=int, default=0, help="原始字节每 body 落多少（0=全量）")
-    ap.add_argument("--no-tshark", action="store_true", help="不抓 JA3/SNI")
-    ap.add_argument("--dry-run", action="store_true", help="只打印计划，不起进程、不改注册表")
+    ap.add_argument("--no-tshark", action="store_true")
+    ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
     out = Path(args.out_dir)
-    jsonl = out / "mitm.jsonl"
-    dump_dir = out / "raw"
+    hosts_file = Path(args.hosts_file)
+    redirect = [h.strip() for h in args.redirect.split(",") if h.strip()]
+    real_ips = {h: resolve_real_ip(h) for h in redirect}
     plan = {
-        "out_dir": str(out),
-        "duration_s": args.duration,
-        "proxy": "127.0.0.1:%d" % args.proxy_port,
-        "intercept_hosts": args.hosts.split(","),
-        "dump_anticheat_to": str(dump_dir),
-        "dump_limit": args.dump_limit,
+        "out_dir": str(out), "duration_s": args.duration,
+        "hosts_file": str(hosts_file), "redirect_to": "127.0.0.1",
+        "listen_port": args.listen_port, "redirect_hosts": redirect,
+        "real_ips": real_ips, "cert_dir": args.cert_dir,
+        "dump_limit": args.dump_limit, "admin": is_admin(),
         "tshark": "off" if args.no_tshark else (find_tshark() or "MISSING"),
-        "cert_dir": args.cert_dir,
     }
     if args.dry_run:
-        print(json.dumps({"plan": plan, "ie_proxy_now": snapshot_ie_proxy()},
-                         ensure_ascii=False, indent=1))
+        print(json.dumps({"plan": plan}, ensure_ascii=False, indent=1))
         return 0
-
+    if not is_admin():
+        print("需要管理员权限（要改 hosts）。请用提升的 shell 运行，例如：")
+        print('  MSYS_NO_PATHCONV=1 sudo --disable-input pwsh -NoProfile -NonInteractive '
+              '-Command \'python tools/eac_baseline_capture.py --out-dir %s --duration %d\''
+              % (args.out_dir, args.duration))
+        return 2
+    if any(v is None for v in real_ips.values()):
+        print("有 host 解析不到真实 IP，拒绝继续（会把自己的转发打入回环）：%s"
+              % [h for h, v in real_ips.items() if not v])
+        return 2
     cert_dir = Path(args.cert_dir)
     if not (cert_dir / "server.chain.pem").exists():
-        print("缺少证书：先跑\n  python tools/mockctl.py cert-gen --dir %s --hosts %s"
-              % (cert_dir, args.hosts))
+        print("缺少证书，先跑：python tools/mockctl.py cert-gen --dir %s --hosts %s"
+              % (cert_dir, ",".join(redirect)))
         return 2
 
     out.mkdir(parents=True, exist_ok=True)
-    saved = snapshot_ie_proxy()
-    (out / "ie-proxy-backup.json").write_text(
-        json.dumps(saved, ensure_ascii=False, indent=1), encoding="utf-8")
+    original = hosts_file.read_text(encoding="utf-8", errors="replace")
+    (out / "hosts-original.txt").write_text(original, encoding="utf-8")
 
-    proxy_cmd = [sys.executable, str(REPO / "tools" / "mitm_proxy.py"),
-                 "--port", str(args.proxy_port), "--intercept", args.hosts,
-                 "--cert-dir", str(cert_dir), "--no-chain", "--log", str(jsonl),
-                 "--dump-bodies", str(dump_dir), "--dump-hosts", ANTICHEAT_HOST,
-                 "--dump-paths", "/anticheat/", "--dump-limit", str(args.dump_limit)]
-    started = time.strftime("%Y-%m-%dT%H:%M:%S")
+    jsonl, dump_dir = out / "mitm.jsonl", out / "raw"
     procs: list[subprocess.Popen] = []
     tsh = None
     pcap_path: Path | None = None
+    started = time.strftime("%Y-%m-%dT%H:%M:%S")
     try:
-        print("[1/4] 系统代理 → %s:18092（原值已备份到 ie-proxy-backup.json）" % "127.0.0.1")
-        apply_ie_proxy("127.0.0.1:%d" % args.proxy_port)
-        print("[2/4] 起 MITM：%s" % " ".join(proxy_cmd[-6:]))
-        procs.append(subprocess.Popen(proxy_cmd))
+        print("[1/5] hosts 加行 → %s（原文件已备份 hosts-original.txt）" % redirect)
+        extra = "".join("\n127.0.0.1 %s  # hd2-eac-baseline\n" % h for h in redirect)
+        hosts_file.write_text(original.rstrip("\n") + "\n" + extra, encoding="utf-8")
+        flush_dns()
+
+        primary = redirect[0]
+        cmd = [sys.executable, str(REPO / "tools" / "mitm_proxy.py"),
+               "--tls-listen", "127.0.0.1:%d" % args.listen_port,
+               "--tls-host", primary, "--forward-ip", str(real_ips[primary]),
+               "--intercept", ",".join(redirect), "--cert-dir", str(cert_dir),
+               "--no-chain", "--log", str(jsonl),
+               "--dump-bodies", str(dump_dir), "--dump-hosts", primary,
+               "--dump-paths", "/anticheat/", "--dump-limit", str(args.dump_limit)]
+        print("[2/5] 起 MITM 透明终结：127.0.0.1:%d → 真实上游 %s"
+              % (args.listen_port, real_ips[primary]))
+        procs.append(subprocess.Popen(cmd))
         if not args.no_tshark and (tsh := find_tshark()):
-            pcap = out / "loopback.pcapng"
-            ja3 = out / "ja3-sni.tsv"
-            # loopback 上 ClientHello 是明文 ⇒ 无需解密即可取 JA3/SNI
-            tproc = subprocess.Popen(
-                [tsh, "-i", r"\Device\NPF_Loopback", "-f", "tcp port %d" % args.proxy_port,
-                 "-w", str(pcap), "-q"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            procs.append(tproc)
-            pcap_path = pcap
-            print("[3/4] tshark 抓 loopback → %s（结束后自动抽 JA3/SNI）" % pcap.name)
+            pcap_path = out / "loopback.pcapng"
+            procs.append(subprocess.Popen(
+                [tsh, "-i", r"\Device\NPF_Loopback",
+                 "-f", "tcp port %d" % args.listen_port, "-w", str(pcap_path), "-q"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+            print("[3/5] tshark 抓 loopback（结束后抽 JA3/SNI）")
         else:
-            print("[3/4] 跳过 tshark")
-        print("[4/4] 现在启动游戏（主菜单停留即可，%d 秒后自动收尾；Ctrl+C 可提前结束）"
+            print("[3/5] 跳过 tshark")
+        print("[4/5] **现在启动游戏**（停在主菜单即可，%d 秒后自动收尾；Ctrl+C 提前结束）"
               % args.duration)
         deadline = time.time() + args.duration
         while time.time() < deadline:
@@ -305,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n[!] 提前结束")
     finally:
-        print("[*] 收尾：停进程 + 还原系统代理")
+        print("[*] 收尾：停进程 → 还原 hosts → 刷 DNS")
         for p in procs:
             try:
                 p.terminate()
@@ -319,28 +320,36 @@ def main(argv: list[str] | None = None) -> int:
                     p.kill()
                 except Exception:  # noqa: BLE001
                     pass
-        try:
-            restore_ie_proxy(saved)
-            print("[*] 系统代理已还原：%s" % json.dumps(saved, ensure_ascii=False))
-        except Exception as exc:  # noqa: BLE001
-            print("[!] 代理还原失败，请手工恢复：%r" % (exc,))
+            p = None
+        # 逐行还原：直接写回原始文本，再比对
+        hosts_file.write_text(original, encoding="utf-8")
+        flush_dns()
+        restored = hosts_file.read_text(encoding="utf-8", errors="replace")
+        diff = hosts_diff(original, restored)
         if pcap_path is not None and tsh:
-            n = extract_ja3(tsh, pcap_path, out / "ja3-sni.tsv")
+            n = extract_ja3(tsh, pcap_path, out / "ja3-sni.tsv", args.listen_port)
             print("[*] JA3/SNI 提取 %d 条 → ja3-sni.tsv" % n)
         ended = time.strftime("%Y-%m-%dT%H:%M:%S")
         rows = build_index(jsonl)
         meta = summarize(rows, started=started, ended=ended)
-        meta["hosts"] = count_hosts(jsonl)
-        meta["game_api_requests"] = meta["hosts"].get(GAME_API_HOST, {}).get("requests", 0)
-        meta["modules_cdn_seen"] = MODULES_HOST in meta["hosts"]
+        meta.update({
+            "redirect_hosts": redirect, "real_ips": real_ips,
+            "hosts_restore": diff,
+            "system_proxy_untouched": True,
+            "ca_note": "研究 CA 仍装在 CurrentUser\\Root，未卸载",
+            "hosts": count_hosts(jsonl),
+            "game_api_requests": count_hosts(jsonl).get(GAME_API_HOST, {}).get("requests", 0),
+            "modules_cdn_seen": MODULES_HOST in count_hosts(jsonl),
+        })
         (out / "index.jsonl").write_text(
             "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + ("\n" if rows else ""),
             encoding="utf-8")
         (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1),
                                        encoding="utf-8")
         print("\n== 完成 ==")
-        print(" anticheat 请求 %d 条 / 响应 %d 条；原始文件 %d 个"
-              % (meta["anticheat_requests"], meta["anticheat_responses"], meta["raw_files"]))
+        print(" anticheat 请求 %d / 响应 %d；原始文件 %d 个；hosts 还原一致=%s"
+              % (meta["anticheat_requests"], meta["anticheat_responses"],
+                 meta["raw_files"], diff["identical"]))
         if meta["dt_ms_series"]:
             print(" 间隔序列(ms): %s" % meta["dt_ms_series"][:12])
             print(" 长度序列(B): %s" % meta["req_len_series"][:12])

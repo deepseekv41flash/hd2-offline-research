@@ -150,7 +150,9 @@ class MitmProxy:
                  blackhole_hosts: set[str] | None = None,
                  fake_hosts: set[str] | None = None,
                  dump_dir: Path | None = None, dump_hosts: set[str] | None = None,
-                 dump_paths: str = "", dump_limit: int = 4096):
+                 dump_paths: str = "", dump_limit: int = 4096,
+                 tls_listen: tuple[str, int] | None = None, tls_host: str | None = None,
+                 forward_ip: str | None = None):
         self.host = host
         self.port = port
         self.intercept = {h.lower() for h in intercept}
@@ -172,10 +174,17 @@ class MitmProxy:
         self._dump_re = re.compile(dump_paths) if dump_paths else None
         self.dump_limit = int(dump_limit)
         self._dump_seq = 0
+        # 透明 TLS 终结（hosts 重定向场景）：客户端直连我们，我们用自己签的证书充当
+        # 该 host 的服务端，再把请求**忠实转发**到真实 IP（forward_ip，避免 hosts 把我们自己
+        # 指回环）。为什么不走 CONNECT/系统代理：实测 EOS/EAC 是**直连**，不吃 IE 代理/env。
+        self.tls_listen = tls_listen
+        self.tls_host = (tls_host or "").lower() or None
+        self.forward_ip = forward_ip
         self._lock = threading.Lock()
         self.stats = {"connect": 0, "intercepted": 0, "chained": 0, "requests": 0,
                       "bytes_in": 0, "bytes_out": 0, "tls_fail": 0}
         self._srv: socket.socket | None = None
+        self._direct_srv: socket.socket | None = None
         self._stop = threading.Event()
         self._ctx = self._make_ctx()
 
@@ -249,6 +258,9 @@ class MitmProxy:
         return self._srv.getsockname()[1]
 
     def start(self) -> None:
+        if self.tls_listen:
+            threading.Thread(target=self._serve_direct, daemon=True).start()
+            return
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind((self.host, self.port))
@@ -258,6 +270,13 @@ class MitmProxy:
               f"链路={self.chain_proxy}", flush=True)
 
     def serve_forever(self) -> None:
+        if self.tls_listen:
+            if self._direct_srv is None:
+                self.start()
+            # 透明模式：监听在独立线程里跑，这里只负责挂住直到 stop()
+            while not self._stop.is_set():
+                time.sleep(0.2)
+            return
         if self._srv is None:
             self.start()
         assert self._srv is not None
@@ -270,6 +289,12 @@ class MitmProxy:
 
     def stop(self) -> None:
         self._stop.set()
+        if self._direct_srv is not None:
+            try:
+                self._direct_srv.close()
+            except OSError:
+                pass
+            self._direct_srv = None
         if self._srv is not None:
             try:
                 self._srv.close()
@@ -324,6 +349,50 @@ class MitmProxy:
                 pass
 
     # ---- 非拦截：转发给既有代理 ----
+    def _serve_direct(self) -> None:
+        """透明 TLS 终结模式：为 tls_host 起一个直连监听，逐连接复用 `_serve_tls`。"""
+        assert self.tls_listen and self.tls_host
+        ip, port = self.tls_listen
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind((ip, port))
+        srv.listen(16)
+        self._direct_srv = srv
+        ctx = self._make_ctx()
+        print("[mitm] 透明监听 %s:%d（冒充 %s → 真实上游 %s:443）"
+              % (ip, port, self.tls_host, self.forward_ip or "DNS"), flush=True)
+        while not self._stop.is_set():
+            try:
+                client, addr = srv.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._handle_direct, args=(client, addr, ctx),
+                             daemon=True).start()
+
+    def _handle_direct(self, client: socket.socket, addr, ctx) -> None:
+        try:
+            client.settimeout(30)
+            tls = ctx.wrap_socket(client, server_side=True)
+        except (ssl.SSLError, OSError) as exc:
+            self._log({"host": self.tls_host, "event": "client_tls_failed",
+                       "error": type(exc).__name__})
+            try:
+                client.close()
+            except OSError:
+                pass
+            return
+        with self._lock:
+            self.stats["connect"] += 1
+        try:
+            self._serve_tls(tls, self.tls_host, 443)
+        except (ssl.SSLError, OSError):
+            pass
+        finally:
+            try:
+                tls.close()
+            except OSError:
+                pass
+
     def _chain(self, client: socket.socket, host: str, port: int) -> None:
         if self.chain_proxy is None:
             self._log({"host": host, "event": "no_chain_proxy"})
@@ -423,8 +492,9 @@ class MitmProxy:
 
     def _forward(self, host: str, port: int, head: bytes, body: bytes):
         """返回 (status, 原始响应字节, 可解析 body, ctype, 请求体长度)；失败返回 None。"""
+        dest = (self.forward_ip or host, port)
         try:
-            raw_up = socket.create_connection((host, port), timeout=15)
+            raw_up = socket.create_connection(dest, timeout=15)
         except OSError as exc:
             self._log({"host": host, "event": "upstream_connect_failed",
                        "error": type(exc).__name__})
@@ -504,6 +574,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="逗号分隔；配合 --dump-bodies，限定只落这些 host 的原值")
     p.add_argument("--dump-paths", default="",
                    help="正则；配合 --dump-bodies，进一步限定 path（如 '/anticheat/v8'）")
+    p.add_argument("--tls-listen", default="",
+                   help="透明 TLS 终结监听 ip:port（hosts 重定向场景用，如 127.0.0.1:443）")
+    p.add_argument("--tls-host", default="",
+                   help="透明模式冒充哪个 host（证书必须有该 SAN）")
+    p.add_argument("--forward-ip", default="",
+                   help="透明模式的真实上游 IP（必填；否则 hosts 会把自己指回环）")
     p.add_argument("--dump-limit", type=int, default=4096,
                    help="每个 body 最多落多少字节（默认 4096；0 = 全量）")
     args = p.parse_args(argv)
@@ -515,7 +591,12 @@ def main(argv: list[str] | None = None) -> int:
         mock_hosts={h.strip() for h in args.mock_hosts.split(",") if h.strip()},
         mock_ca=args.mock_ca,
         blackhole_hosts={h.strip() for h in args.blackhole_hosts.split(",") if h.strip()},
-        fake_hosts={h.strip() for h in args.fake_hosts.split(",") if h.strip()})
+        fake_hosts={h.strip() for h in args.fake_hosts.split(",") if h.strip()},
+        dump_dir=args.dump_bodies,
+        dump_hosts={h.strip() for h in args.dump_hosts.split(",") if h.strip()},
+        dump_paths=args.dump_paths, dump_limit=args.dump_limit,
+        tls_listen=(_parse_hp(args.tls_listen) if args.tls_listen else None),
+        tls_host=(args.tls_host or None), forward_ip=(args.forward_ip or None))
     try:
         proxy.serve_forever()
     except KeyboardInterrupt:
