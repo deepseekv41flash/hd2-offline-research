@@ -1,0 +1,139 @@
+# 第 5 轮（注入轮）执行手册 — 2026-11-25
+
+> 与 EAC-off 线（`session-dbc6228a`）共用同一窗口：**RE 只读注入 + 我这边网络采集**。
+> 这轮只回答一个问题：**RE 的只读注入动作，在 EAC 上报通道上有没有可观察的变化？**
+
+## 0. 判定链（顺序不可跳）
+
+```
+第 0 步  链路存活？          ← 不活 ⇒ 本轮"无结论"，后面的红/绿都不算数
+第 1 步  User-Agent          ← 最廉价的突变点（含 "Developer Build"）
+第 2 步  新增周期（只认"明显更快"）
+第 3 步  体积分布（新量级 / 大包翻倍 / 中位偏移 >30%）
+第 4 步  correlation-id      ← 只作关联键，不作判据
+```
+
+**红线**：`v8 = 0 条` **不能**直接读成"未被感知"。必须先用 `eac-watch` 判是**链路断**还是**真没上报**。
+
+## 1. 固定握手（★ 顺序反了本轮就作废）
+
+| # | 谁 | 动作 | 回话 |
+|---|---|---|---|
+| ① | EAC-off 线 | 发「准备」+ 预计下单时刻 | — |
+| ② | **我** | 起采集器 + 自检 PASS + 起旁路采样 | **「代理已就位 HH:MM:SS」** |
+| ③ | EAC-off 线 | **收到"就位"之后**才下单 | 「下单 HH:MM:SS」 |
+| ④ | EAC-off 线 | 轮询到游戏进程 | 「进程出现 HH:MM:SS.mmm」 |
+| ⑤ | RE | 注入完成 | 「注入完成 <ms>」+ EAC 是否存活 |
+| ⑥ | **我** | 采集结束 → 还原代理 → 对比 → 报告 | 三态表 |
+
+**硬规则**：③ 必须在 ② 之后。
+### 1.1 窗口长度（用第 4 轮实测反推）
+
+| 事件 | 相对「进程出现」|
+|---|---|
+| 首条 v8 | **+55 s** |
+| 末条 v8（p4）| +187 s |
+| 启动器退出（p4/演练）| +13~15 s（启动器≠游戏，别把它当游戏）|
+
+⇒ `--duration 300` 从「就位」起算，只要**下单不晚于就位后 ~60 s** 就能覆盖全系列；
+若对面拖到就位后 2 min 才下单，必须**重启采集器**（或把 duration 加到 420）再加旁路采样。
+因为 `api.epicgames.dev` 是**长连接复用**
+（第 4 轮实测：6 条隧道承载 29 个请求），**隧道建好之后再挂代理，整段 v8 序列一条也看不到**。
+
+## 2. 执行清单（三个终端）
+
+### T1 — 采集器（先起，等自检 PASS）
+
+```bash
+cd /d/mod/work/hd2-offline-research
+MSYS_NO_PATHCONV=1 python tools/eac_capture_proxy_run.py \
+    --out-dir D:/mod/tmp/eac-p5 --duration 300 --chain-proxy 127.0.0.1:7897
+```
+
+判据：日志出现 **`[*] 开窗自检：PASS`**（采集器自检会经代理打一条 72 B 假上报，
+`PREFLIGHT`×8）⇒ 才算"代理已就位"，**此时才能回话让对面下单**。
+`FAIL` ⇒ **不回话**，先修（采集器会打印 `[!] 自检失败 —— 现在停下来，别浪费游戏窗口`）。
+
+### T2 — 旁路采样（T1 起来后立刻起，覆盖整个窗口）
+
+```bash
+cd /d/mod/work/hd2-offline-research
+python tools/eac_watch_liveness.py --out D:/mod/tmp/eac-p5/eac-watch.jsonl \
+    --duration 330 --interval 5
+```
+
+### T3 — 事后对比（T1 自行收尾还原代理之后）
+
+```bash
+cd /d/mod/work/hd2-offline-research
+python tools/compare_baseline_vs_run.py --baseline state/evidence/baseline-v8.json \
+    --run D:/mod/tmp/eac-p5 ; echo "compare exit=$?"
+
+python tools/eac_watch_liveness.py --verdict D:/mod/tmp/eac-p5/eac-watch.jsonl \
+    --run D:/mod/tmp/eac-p5 --min-v8 3 ; echo "liveness exit=$?"
+```
+
+## 3. 采集前 30 秒自检
+
+- [ ] 端口 `18092` 空闲（`netstat -ano | grep 18092`）
+- [ ] 无 `helldivers2.exe` / `start_protected_game.exe` / `EasyAntiCheat_EOS.exe`
+- [ ] IE 代理 = `127.0.0.1:7897`（**原值**，采完要还原成它）
+- [ ] `state/evidence/baseline-v8.json` 存在且 `count = 15`
+- [ ] 不用管理员（系统代理 + CONNECT 终结不需要提权）
+
+## 4. 判读（照着填，不许跳步）
+
+### 4.1 第 0 步：链路存活（`eac_watch_liveness.py --verdict`）
+
+| 退出码 | label | 含义 | 本轮处置 |
+|---|---|---|---|
+| 0 | `link-alive` | EAC 活着 + 有连接 + v8 ≥ 3 | 继续做 1/2/3/4 步 |
+| 2 | `link-dead-eac-missing` | EAC 进程大面积消失 | **无结论**（很可能注入把它弄死了）|
+| 2 | `link-dead-no-network` | 游戏全程 0 连接 | **无结论**（代理没生效）|
+| 2 | `link-alive-but-traffic-missing` | EAC 活但 v8 < 3 | **无结论**（流量不足）|
+| 3 | `no-game-window` | 没看到游戏进程 | **无结论**（窗口没对上）|
+
+### 4.2 时间轴对齐（他们给三行，我复算）
+
+| 事件 | 来源 | 用途 |
+|---|---|---|
+| 注入完成 `<ms>` | RE json | 判"注入是否早于隧道建立（+44 s）" |
+| 进程出现 `HH:MM:SS.mmm` | 他们的轮询 + `CreationDate` | **原点**（我的 `eac-watch` 能独立复算）|
+| 首条 v8 | 本轮 `mitm.jsonl` | 应 ≈ 原点 **+55 s**（p4 实测）；偏太多说明连接建立更慢 |
+
+### 4.3 三态标记（报告里统一用）
+
+`✓✓ 实机` = 真机实测；`✓ 离线+数据` = 离线分析 + 已有数据支撑；`⚠ 未证` = 未验证；`✗ 否证` = 已否证。
+
+## 5. 报告模板
+
+```
+## 第 5 轮（注入轮）网络侧判读
+
+- 链路：link-alive（EAC 存活 100%、连接峰值 N、v8 N 条）    ← 第 0 步
+- 原点：进程出现 HH:MM:SS.mmm；注入完成 +X ms；首条 v8 +NN s
+- [绿/黄/红] User-Agent：与基线一致 / 变化（列出差异）
+- [绿/黄/红] 新增周期：无 / 出现 <N s（基线最快 X s × 0.7 = Y s）
+- [绿/黄/红] 体积：max N vs 33,280；中位 N vs 4,924（偏移 X%）；大包 N vs 4
+- [关联] correlation-id：v8 N 条 / telemetry N 条、交集 N
+- dt_ms 全列：...
+
+> 限定：载荷不可读（熵 ≈8、非 protobuf、不可解压），只覆盖 v8/v6 两个通道；
+> "未发现变化"≠"未上报"，只表示**在这四个可观察信号上没看到差异**。
+```
+
+## 6. 异常分支
+
+| 现象 | 先查 | 处置 |
+|---|---|---|
+| 自检 FAIL | 端口 18092 是否被占、上游 7897 是否通 | 修好再回"就位"；不回话 |
+| `anticheat` 0 条 | `eac-watch` 的 EAC 存活 / `netstat` 18092 是否有连接 | EAC 死 ⇒ 无结论；代理没生效 ⇒ 本轮作废 |
+| 只有 PREFLIGHT 1 条 | 游戏是否真的走了系统代理 | 大概率游戏没启动到 EOS 初始化阶段，重跑 |
+| 采集结束后代理没还原 | `reg query ... //v ProxyServer` | 手动改回 `127.0.0.1:7897` |
+
+## 7. 回滚清单（每次收尾都核对）
+
+- [ ] IE 代理 = `127.0.0.1:7897`（`ProxyEnable=1`）
+- [ ] `18092` 已释放、`tshark` 已退出
+- [ ] 不动 hosts / 不装根 CA / 不加防火墙规则（第 1~3 轮已证无效，别再碰）
+- [ ] 证据落 `D:/mod/tmp/eac-p5`（`mitm.jsonl` / `raw/` / `eac-watch.jsonl` / `meta.json`）
