@@ -11,6 +11,7 @@
 | `C` | 改启动器 IAT、无注入 | 跟 `A` 比（看"改启动器"本身有没有信号）|
 | `B` | 改启动器 IAT + 真注入 | 跟 `A` 和 `C` 比 |
 | `A(deg)` | 本想跑 `C`，但 **hook 没装上** ⇒ 退化成 `A` | 只能当 `A` 的补样，**不能当控制臂** |
+| `void` | 轮次作废（游戏没起来/链路没通/被冻死等）| **不进任何臂**，只留痕 |
 
 三臂 + 两两对比 + RE 的毫秒级时刻，靠嘴记一定会乱。所以每轮采完跑这条命令，
 把该轮的"身份证"落成 `state/evidence/rounds/<date>-<arm>.json`，之后所有报告都引它。
@@ -36,7 +37,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 TOOLS = Path(__file__).resolve().parent
-VALID_ARMS = ("A", "C", "B", "A(deg)")
+VALID_ARMS = ("A", "C", "B", "A(deg)", "void")
 
 
 def _import(name: str):
@@ -57,6 +58,9 @@ def resolve_arm(arm: str, hook_installed: bool | None) -> tuple[str, list[str]]:
     arm = (arm or "").strip()
     if arm not in VALID_ARMS:
         raise ValueError(f"未知 arm: {arm!r}（只接受 {VALID_ARMS}）")
+    if arm == "void":
+        warnings.append("void 轮次：不进任何臂，仅留痕")
+        return "void", warnings
     if arm == "C" and hook_installed is False:
         warnings.append("hook_installed=False ⇒ C 臂不成立，降级记为 A(deg)（不得当控制臂用）")
         return "A(deg)", warnings

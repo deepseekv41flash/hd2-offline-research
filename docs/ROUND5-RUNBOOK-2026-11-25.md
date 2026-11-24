@@ -179,6 +179,48 @@ B 的异常会被**错误归因**。这一条由工具强制，不靠人记。
 | 只有 PREFLIGHT 1 条 | 游戏是否真的走了系统代理 | 大概率游戏没启动到 EOS 初始化阶段，重跑 |
 | 采集结束后代理没还原 | `reg query ... //v ProxyServer` | 手动改回 `127.0.0.1:7897` |
 
+## 6.5 中止 / 重置采集窗口（★ 第 1 次实战踩过，务必照做）
+
+### 6.5.1 「就位」后的下单截止时间
+
+完整系列末条 v8 在 **+187 s**（相对进程出现），所以：
+
+```
+下单截止 = 就位 + (300 − 187) ≈ 就位 + 110 s
+```
+
+超过这个时刻还没下单 ⇒ **主动重置窗口**（重开 300 s），并把新的「就位」时刻重新告知对方。
+否则只采到半截序列（首条 v8 有、尾巴没有），分布类判据不可用。
+
+### 6.5.2 中止采集时必须杀 **三样**（只杀第一个会留孤儿）
+
+采集器是**三层进程**：
+
+| 层 | 进程 | 只杀上层的后果 |
+|---|---|---|
+| 1 | `eac_capture_proxy_run.py` | — |
+| 2 | `mitm_proxy.py`（子进程，**占着 18092**）| 端口不释放，新窗口起不来 |
+| 3 | `tshark` + `dumpcap` | 抓着网卡，pcap 写不进去 |
+
+```powershell
+# 一次清干净（按命令行匹配，别按名字乱杀）
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+  Where-Object { $_.CommandLine -match 'eac_capture_proxy_run|eac_watch_liveness|mitm_proxy' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+Get-Process tshark,dumpcap -ErrorAction SilentlyContinue | Stop-Process -Force
+# 然后手动把 IE 代理改回 127.0.0.1:7897，并确认 18092 无 LISTENING
+```
+
+### 6.5.3 重置窗口要**换新目录**，绝不 `rm -rf` 旧证据
+
+第 1 次实战（01:45）我重置窗口时删了旧目录，**丢掉了第一次窗口的 `eac-watch.jsonl`**
+（里面有"启动器出现"的原样时刻）。虽然靠第二个窗口的采样仍能佐证，但这是不该付的代价。
+
+```
+D:/mod/tmp/eac-p6-c-1/   # 第 1 次窗口（即使作废也留着）
+D:/mod/tmp/eac-p6-c-2/   # 第 2 次窗口
+```
+
 ## 7. 回滚清单（每次收尾都核对）
 
 - [ ] IE 代理 = `127.0.0.1:7897`（`ProxyEnable=1`）

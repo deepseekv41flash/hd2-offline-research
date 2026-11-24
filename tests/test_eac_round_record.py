@@ -98,3 +98,10 @@ def test_main_writes_record_and_reports_downgrade(_cap: Path, tmp_path: Path):
 
 def test_main_rejects_bad_arm(_cap: Path, tmp_path: Path):
     assert rr.main(["--arm", "Z", "--run", str(_cap), "--out", str(tmp_path / "x.json")]) == 2
+
+
+def test_void_arm_is_accepted_and_flagged():
+    """作废轮次（游戏没起来等）只留痕、不进任何臂。"""
+    arm, warns = rr.resolve_arm("void", None)
+    assert arm == "void"
+    assert any("不进任何臂" in w for w in warns)
