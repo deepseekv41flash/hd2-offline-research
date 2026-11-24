@@ -220,6 +220,40 @@ def hosts_diff(original: str, restored: str) -> dict:
             "extra": [ln for ln in r if ln not in o][:10]}
 
 
+# ---------------------------------------------------------------- 系统代理（HKCU，无需管理员）
+IE_KEY = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+
+
+def snapshot_ie_proxy() -> dict:
+    import winreg
+    out = {}
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, IE_KEY) as k:
+        for name in ("ProxyEnable", "ProxyServer", "ProxyOverride", "AutoConfigURL"):
+            try:
+                out[name] = winreg.QueryValueEx(k, name)[0]
+            except FileNotFoundError:
+                out[name] = None
+    return out
+
+
+def apply_ie_proxy(server: str) -> None:
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, IE_KEY, 0, winreg.KEY_SET_VALUE) as k:
+        winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, 1)
+        winreg.SetValueEx(k, "ProxyServer", 0, winreg.REG_SZ, server)
+
+
+def restore_ie_proxy(saved: dict) -> None:
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, IE_KEY, 0, winreg.KEY_SET_VALUE) as k:
+        if saved.get("ProxyEnable") is not None:
+            winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, int(saved["ProxyEnable"]))
+        for name in ("ProxyServer", "ProxyOverride", "AutoConfigURL"):
+            val = saved.get(name)
+            if val is not None:
+                winreg.SetValueEx(k, name, 0, winreg.REG_SZ, str(val))
+
+
 # ---------------------------------------------------------------- hosts / 权限
 def is_admin() -> bool:
     try:
