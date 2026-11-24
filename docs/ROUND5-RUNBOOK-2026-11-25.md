@@ -73,6 +73,39 @@ python tools/eac_watch_liveness.py --verdict D:/mod/tmp/eac-p5/eac-watch.jsonl \
     --run D:/mod/tmp/eac-p5 --min-v8 3 ; echo "liveness exit=$?"
 ```
 
+## 2.5 三臂对比（A / C / B）★ 归因必需
+
+| 臂 | 条件 | 判据来源 | 存放 |
+|---|---|---|---|
+| **A** | 无注入、启动器未改 | ✅ 已有两轮（15 + 14 条 v8） | `state/evidence/baseline-v8.json`（**唯一锚**）|
+| **C** | 改启动器 IAT、**无注入** | 即 RE 冻结版验证轮 | `state/evidence/control-launcher-patched.json`（**永不并入锚**）|
+| **B** | 改启动器 IAT + 真注入 | 注入轮 | 只跟 A、C 比，不冻 |
+
+**为什么必须有 C**：注入/补丁在进程出现后 +4~8 ms 就做完并恢复，而 EAC 上报通道 **+44 s** 才建立
+⇒ B 出现异常时，单看网络**无法区分**"注入被感知"与"启动器被改被感知"。只有 C 能把这个差值单独测出来。
+**若最终没有 C**：B 相对 A 的变化必须写成**合并效应**，不得单独归因。
+
+```bash
+# C 轮采完：只对比，**绝不 --freeze 进 baseline-v8.json**（锚不能带噪声）
+python tools/compare_baseline_vs_run.py --baseline state/evidence/baseline-v8.json     --run D:/mod/tmp/eac-p6-control ; echo "A vs C exit=$?"
+
+# 允许给 C 单独冻一份"控制臂基线"（它不是锚，只用于 C vs B）
+python tools/compare_baseline_vs_run.py --freeze --run D:/mod/tmp/eac-p6-control     --out state/evidence/control-launcher-patched.json
+
+# B 轮：C vs B（比 A vs B 更能说明"注入本身"的效应）
+python tools/compare_baseline_vs_run.py --baseline state/evidence/control-launcher-patched.json     --run D:/mod/tmp/eac-p7-inject ; echo "C vs B exit=$?"
+```
+
+### 2.6 `compare_baseline_vs_run.py` 退出码（2026-11-25 起）
+
+| 码 | 含义 | 处置 |
+|---|---|---|
+| **0** | 绿 / 黄 | 正常判读 |
+| **1** | 红（某信号命中） | 先核对是不是判据噪声，再下结论 |
+| **3** | **无结论**（本轮 0 条 v8） | 先跑 `eac_watch_liveness --verdict`；链路断 ⇒ 不得写"被感知" |
+
+> 0 条 v8 判"红"是**错的**（会把"没采到"误报成"被感知"），已改成"无结论"+退出码 3。
+
 ## 3. 采集前 30 秒自检
 
 - [ ] 端口 `18092` 空闲（`netstat -ano | grep 18092`）

@@ -12,6 +12,8 @@
 | 体积分布 | 出现基线最大之外的**新量级**，或大包条数翻倍 | 中位数偏移 >30% | 同量级 |
 | `correlation-id` | 只作关联键，不作判据 | — | — |
 
+退出码：**0**=绿/黄 · **1**=红 · **3**=无结论（本轮 0 条 v8，先看链路存活）。
+
 用法：
     # 1) 冻结基线（用一轮干净 capture 目录）
     python tools/compare_baseline_vs_run.py --freeze --run D:/mod/tmp/eac-p3 \
@@ -165,9 +167,36 @@ def dominant_periods(dts_ms: list[int], min_s: float = PERIOD_MIN_S,
 
 
 def compare(baseline: dict, run: dict) -> dict:
-    """按四条信号出判定（红/黄/绿）+ 差值表。"""
+    """按四条信号出判定（红/黄/绿）+ 差值表。
+
+    **0 条 v8 是"无结论"而不是"红"**（2026-11-25 第 5 轮前置补的）：
+    0 条可能只是链路断了（EAC 被杀 / 代理没生效 / 窗口没覆盖到），把它判成"红"
+    = 把"没采到"误报成"被感知"。链路是否成立交给 `tools/eac_watch_liveness.py --verdict`。
+    """
     base_items = baseline.get("items") or []
     cur = run["v8"]
+    if not cur:
+        base_lens0 = [int(i["req_len"]) for i in base_items]
+        return {
+            "overall": "无结论",
+            "rows": [{"signal": s, "verdict": "N/A", "detail": "本轮 0 条 v8，无法对比"}
+                     for s in ("User-Agent", "新增周期", "体积分布")] + [
+                {"signal": "correlation-id", "verdict": "N/A",
+                 "detail": "v8 0 条 / telemetry 带 id %d 条"
+                           % len([t for t in run["telemetry"] if t.get("correlation_id")])}],
+            "baseline": {"count": len(base_items),
+                         "req_len_max": max(base_lens0) if base_lens0 else 0,
+                         "big_msg_count": sum(1 for x in base_lens0 if x >= BIG_MSG_BYTES),
+                         "req_len_median": statistics.median(base_lens0) if base_lens0 else 0,
+                         "periods_s": sorted(baseline.get("periods_s") or []),
+                         "ua": sorted(baseline.get("ua_set") or [])},
+            "run": {"count": 0, "req_len_max": 0, "big_msg_count": 0, "req_len_median": 0,
+                    "periods_s": [], "ua": [],
+                    "v6_msgs": len(run["v6"]), "telemetry_msgs": len(run["telemetry"])},
+            "note": "本轮 0 条 v8：先跑 tools/eac_watch_liveness.py --verdict 判链路存活；"
+                    "链路断（EAC 被杀 / 代理没生效 / 窗口没覆盖）时只能判『无结论』，"
+                    "不得写成『被感知』。",
+        }
     base_lens = [int(i["req_len"]) for i in base_items]
     cur_lens = [m["req_len"] for m in cur]
     base_dts = [int(i["dt_ms"]) for i in base_items if i.get("dt_ms") is not None]
@@ -269,6 +298,12 @@ def process_pid_hint(capture_dir: Path) -> dict | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows 控制台默认 GBK：中文/⚠ 会 UnicodeEncodeError，统一切 UTF-8
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except Exception:
+            pass
     ap = argparse.ArgumentParser(description="EAC v8 基线冻结/对比")
     ap.add_argument("--run", required=True, help="一轮 capture 目录（含 mitm.jsonl）")
     ap.add_argument("--freeze", action="store_true", help="冻结成基线")
@@ -297,16 +332,20 @@ def main(argv: list[str] | None = None) -> int:
     result["run_meta"] = process_pid_hint(Path(args.run))
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=1))
-        return 0
+        return 3 if result["overall"] == "无结论" else 0
     print("== EAC v8 基线对比：总体 **%s** ==" % result["overall"])
     for r in result["rows"]:
         print("  [%s] %-16s %s" % (r["verdict"], r["signal"], r["detail"]))
+    if result.get("note"):
+        print(chr(10) + "  " + chr(0x26a0) + " " + result["note"])
     b, c = result["baseline"], result["run"]
     print("\n  基线: %d 条, max=%d, 大包=%d, 中位=%s, 周期=%s"
           % (b["count"], b["req_len_max"], b["big_msg_count"], b["req_len_median"], b["periods_s"]))
     print("  本轮: %d 条, max=%d, 大包=%d, 中位=%s, 周期=%s（v6 %d 条 / telemetry %d 条）"
           % (c["count"], c["req_len_max"], c["big_msg_count"], c["req_len_median"],
              c["periods_s"], c["v6_msgs"], c["telemetry_msgs"]))
+    if result["overall"] == "无结论":
+        return 3
     return 0 if result["overall"] != "红" else 1
 
 

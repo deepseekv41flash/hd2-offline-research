@@ -171,3 +171,47 @@ def test_faster_period_is_red(tmp_path: Path):
     msgs = [{"len": 388, "ts": "10:01:%02d" % (i * 3)} for i in range(5)]
     res = cb.compare(base, cb.load_run(_cap(tmp_path / "k", msgs)))
     assert next(r for r in res["rows"] if r["signal"] == "新增周期")["verdict"] == "红"
+
+# ---------------------------------------------------------------- 0 条 v8 = 无结论（第 5 轮前置）
+def test_zero_v8_is_inconclusive_not_red(tmp_path: Path):
+    """0 条 v8 绝不能判"红"：可能是链路断（EAC 被杀/代理没生效/窗口没覆盖）。
+
+    第 5 轮前置补的：判"红"= 断言"被感知"，而 0 条时我们连"有没有上报"都不知道。
+    """
+    base = cb.freeze(cb.load_run(_cap(tmp_path, [{"len": 388}, {"len": 4904}])))
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    (empty / "mitm.jsonl").write_text("", encoding="utf-8")
+
+    res = cb.compare(base, cb.load_run(empty))
+    assert res["overall"] == "无结论"
+    assert all(r["verdict"] == "N/A" for r in res["rows"])
+    assert "watch_liveness" in res["note"]
+    assert res["run"]["count"] == 0
+
+
+def test_main_exit_code_three_on_zero_v8(tmp_path: Path, capsys):
+    base = cb.freeze(cb.load_run(_cap(tmp_path, [{"len": 388}, {"len": 4904}])))
+    base_path = tmp_path / "baseline.json"
+    base_path.write_text(json.dumps(base, ensure_ascii=False), encoding="utf-8")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    (empty / "mitm.jsonl").write_text("", encoding="utf-8")
+
+    code = cb.main(["--baseline", str(base_path), "--run", str(empty), "--json"])
+    assert code == 3
+
+
+def test_main_exit_code_zero_when_green(tmp_path: Path):
+    """同样的样本 vs 自己冻结的基线 ⇒ 绿，退出码 0（0/1 的旧契约不变）。"""
+    m = [{"len": 388}, {"len": 4904}, {"len": 728}]
+    run_dir = _cap(tmp_path, m)
+    base = cb.freeze(cb.load_run(run_dir))
+    base_path = tmp_path / "baseline.json"
+    base_path.write_text(json.dumps(base, ensure_ascii=False), encoding="utf-8")
+
+    run2 = tmp_path / "run2"
+    run2.mkdir()
+    (run2 / "mitm.jsonl").write_text(
+        (run_dir / "mitm.jsonl").read_text(encoding="utf-8"), encoding="utf-8")
+    assert cb.main(["--baseline", str(base_path), "--run", str(run2), "--json"]) == 0
