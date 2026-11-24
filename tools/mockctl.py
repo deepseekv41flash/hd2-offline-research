@@ -59,6 +59,7 @@ def cmd_cert_gen(args) -> int:
     cert_dir = Path(args.dir)
     hosts = [h.strip() for h in (args.hosts or "").split(",") if h.strip()] or None
     meta = certs.generate(cert_dir, host=args.host, hosts=hosts, days=args.days,
+                          max_days=getattr(args, "max_days", 2),
                           crl_port=args.crl_port)
     print(f"[cert-gen] {cert_dir}")
     print(f"  mode={meta['mode']} san={meta['san_dns']} not_after={meta['not_after']}")
@@ -294,7 +295,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", default=SNI)
     p.add_argument("--hosts", default=None,
                    help="逗号分隔的多 SAN 域名（MITM 用；给了就以它为准）")
-    p.add_argument("--days", type=int, default=2)
+    p.add_argument("--days", type=int, default=2,
+                   help="有效期天数（默认 2；放宽需同时给 --max-days，硬上限 7）")
+    p.add_argument("--max-days", type=int, default=2,
+                   help="允许的上限天数（默认 2 = 保守行为不变；要签 7 天就写 7）")
     p.add_argument("--crl-port", type=int, default=18081)
     p.set_defaults(fn=cmd_cert_gen)
 

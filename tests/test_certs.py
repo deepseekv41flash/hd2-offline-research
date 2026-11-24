@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 from mock import certs
 
@@ -58,3 +61,39 @@ def test_uninstall_requires_thumbprint(tmp_path: Path):
 
     with pytest.raises(RuntimeError):
         certs.uninstall_trust(tmp_path)
+
+
+# ---- 有效期策略（2026-11-24 与产品线对齐：默认 2 天、可显式放宽到 7 天、硬上限 7）----
+
+def test_days_default_two(tmp_path: Path):
+    meta = certs.generate(tmp_path / "c2", host="x.example.com")
+    assert meta["days"] == 2 and meta["self_check"] == "OK"
+
+
+def test_days_three_rejected_by_default(tmp_path: Path):
+    """未显式放宽时，3 天必须被拒 —— 保证"默认行为完全不变"。"""
+    with pytest.raises(RuntimeError) as ei:
+        certs.generate(tmp_path / "c3", host="x.example.com", days=3)
+    assert "上限" in str(ei.value)
+
+
+def test_days_seven_allowed_when_explicit(tmp_path: Path):
+    """显式 max_days=7 时允许 7 天（把 UAC 频率从 36h 降到每周）。"""
+    meta = certs.generate(tmp_path / "c7", host="x.example.com", days=7, max_days=7)
+    assert meta["days"] == 7 and meta["self_check"] == "OK"
+    left = (datetime.fromisoformat(meta["not_after"].replace("Z", "+00:00"))
+            - datetime.now(timezone.utc)).total_seconds() / 3600
+    assert 160 < left <= 169
+
+
+def test_days_hard_cap_cannot_be_exceeded(tmp_path: Path):
+    """硬上限 7 天不可被参数突破（max_days=8 也不行）。"""
+    with pytest.raises(RuntimeError) as ei:
+        certs.generate(tmp_path / "c8", host="x.example.com", days=8, max_days=8)
+    assert "7 天" in str(ei.value)
+
+
+def test_ensure_passes_max_days_through(tmp_path: Path):
+    """`ensure()` 也要能把 max_days 透传给 generate（否则续期路径用不上 7 天）。"""
+    meta = certs.ensure(tmp_path / "cs", host="x.example.com", days=7, max_days=7)
+    assert meta["days"] == 7

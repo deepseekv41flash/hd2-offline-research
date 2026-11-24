@@ -32,6 +32,14 @@ DEFAULT_HOST = "api.live.prod.thehelldiversgame.com"
 # 注意：本机 18080 被用户另一个进程（gh_connect_proxy.py）占用，研究线 CRL 固定用 18081，
 # 避免与产品 8080 / 用户进程抢端口（交接档 §8.1 的纪律同样适用于研究线自己的端口）。
 DEFAULT_CRL_PORT = 18081
+# 有效期策略（2026-11-24 与产品线对齐）：
+#   * 默认仍 **2 天**（保守，未显式指定时行为完全不变）；
+#   * 允许显式放宽到 **7 天**（`days=`/`max_days=`），把"每 ~36 h 续期一次 + 一次 UAC 重装信任"
+#     降到"每周一次"；
+#   * 硬上限 7 天：CA 私钥仍然**签完即删**，所以放宽不会让任何人能伪造新证书，
+#     只是已签出的叶子+私钥在被窃后的可用期从 2 天变成 7 天。
+MAX_DAYS_DEFAULT = 2
+MAX_DAYS_HARD = 7
 CA_CN = "HD2 Offline Research CA"
 
 
@@ -110,8 +118,9 @@ def _leaf_builder(hosts: list[str], pub, issuer_name, days: int, crl_port: int,
 
 
 def generate(cert_dir: Path | str, *, host: str | None = None,
-             hosts: list[str] | tuple[str, ...] | None = None, days: int = 2,
-             crl_port: int = DEFAULT_CRL_PORT) -> dict:
+             hosts: list[str] | tuple[str, ...] | None = None, days: int = MAX_DAYS_DEFAULT,
+             crl_port: int = DEFAULT_CRL_PORT,
+             max_days: int = MAX_DAYS_DEFAULT) -> dict:
     """签发一套研究线会话证书（可多 SAN）。返回 session 元数据（同时写 session.json）。"""
     out = Path(cert_dir)
     names = _normalize_hosts(host, hosts)
@@ -164,7 +173,7 @@ def generate(cert_dir: Path | str, *, host: str | None = None,
     (out / "ca.crl").write_bytes(crl.public_bytes(serialization.Encoding.DER))
     del ca_key
 
-    problems = _check(leaf, ca, names, days)
+    problems = _check(leaf, ca, names, days, max_days=max_days)
     meta = {
         "schema": "hd2-offline-research-cert-v2",
         "host": names[0],
@@ -190,7 +199,7 @@ def generate(cert_dir: Path | str, *, host: str | None = None,
     return meta
 
 
-def _check(leaf, ca, hosts: list[str], days: int) -> list[str]:
+def _check(leaf, ca, hosts: list[str], days: int, max_days: int = MAX_DAYS_DEFAULT) -> list[str]:
     problems: list[str] = []
     san = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     dns = list(san.get_values_for_type(x509.DNSName))
@@ -207,8 +216,10 @@ def _check(leaf, ca, hosts: list[str], days: int) -> list[str]:
     left = (leaf.not_valid_after_utc - datetime.now(timezone.utc)).total_seconds()
     if left <= 0:
         problems.append("证书已过期")
-    if days > 2:
-        problems.append("有效期超过 2 天")
+    effective_max = min(max_days, MAX_DAYS_HARD)      # 硬上限不可被参数突破
+    if days > effective_max:
+        problems.append("有效期超过允许上限 %d 天（与产品线约定的硬上限 %d 天）"
+                        % (effective_max, MAX_DAYS_HARD))
     eku = leaf.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
     if ExtendedKeyUsageOID.SERVER_AUTH not in eku:
         problems.append("缺少 serverAuth EKU")
@@ -244,8 +255,9 @@ def remaining_hours(cert_dir: Path | str) -> float | None:
 
 
 def ensure(cert_dir: Path | str, *, host: str | None = None,
-           hosts: list[str] | tuple[str, ...] | None = None, days: int = 2,
-           crl_port: int = DEFAULT_CRL_PORT, min_remaining_hours: float = 6.0) -> dict:
+           hosts: list[str] | tuple[str, ...] | None = None, days: int = MAX_DAYS_DEFAULT,
+           crl_port: int = DEFAULT_CRL_PORT, min_remaining_hours: float = 6.0,
+           max_days: int = MAX_DAYS_DEFAULT) -> dict:
     """证书可用则复用，否则重签（重签后**必须重新装信任**，CA 变了）。"""
     names = _normalize_hosts(host, hosts)
     meta = load_meta(cert_dir)
@@ -257,7 +269,7 @@ def ensure(cert_dir: Path | str, *, host: str | None = None,
         meta["reused"] = True
         meta["remaining_hours"] = round(left, 1)
         return meta
-    meta = generate(cert_dir, hosts=names, days=days, crl_port=crl_port)
+    meta = generate(cert_dir, hosts=names, days=days, crl_port=crl_port, max_days=max_days)
     meta["reused"] = False
     meta["remaining_hours"] = round(remaining_hours(cert_dir) or 0.0, 1)
     return meta
