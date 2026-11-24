@@ -211,3 +211,27 @@ def test_header_without_source_still_resolves_and_learns(synthetic_capture: Path
     h.handle("PUT", "/api/lobby", client_addr="10.0.0.9", headers={"x-hd2-account": HD2_A})
     assert h.players.describe()["learned_ips"] == 1
     assert h.handle("GET", "/api/Progression", client_addr="10.0.0.9").source == f"player:{STEAM_A}"
+
+
+def test_uncertain_source_without_account_skips_all_fallbacks(synthetic_capture: Path, tmp_path: Path):
+    """引擎声明身份不可信（只发 Source 不发 Account）：跳过 IP/单玩家兜底，回落公共数据。"""
+    _write_player(tmp_path, STEAM_A, HD2_A, progression={"experience": 210})
+    h = _handler(synthetic_capture, tmp_path)
+    # 先用可信头学出 IP 映射
+    h.handle("PUT", "/api/lobby", client_addr="10.0.0.5",
+             headers={"x-hd2-account": HD2_A, "x-hd2-account-source": "getmotd"})
+    assert h.players.describe()["learned_ips"] == 1
+    # 再来一条"不可信"请求：不能因为 IP 映射或单玩家就把档给出去
+    resp = h.handle("GET", "/api/Progression", client_addr="10.0.0.5",
+                    headers={"x-hd2-account-source": "uncertain"})
+    assert not resp.source.startswith("player:")
+    assert h.players.last_source == "uncertain:uncertain"
+
+
+def test_uncertain_source_with_account_still_resolves(synthetic_capture: Path, tmp_path: Path):
+    """防御性：真带了 Account 就以 Account 为准（正常不会同时出现）。"""
+    _write_player(tmp_path, STEAM_A, HD2_A, progression={"experience": 210})
+    h = _handler(synthetic_capture, tmp_path)
+    resp = h.handle("GET", "/api/Progression",
+                    headers={"x-hd2-account": HD2_A, "x-hd2-account-source": "uncertain"})
+    assert resp.source == f"player:{STEAM_A}"

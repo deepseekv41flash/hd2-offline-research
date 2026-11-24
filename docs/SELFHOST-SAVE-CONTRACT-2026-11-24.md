@@ -222,3 +222,24 @@ getmessages + 13887067702231565058 → experience=1、成就 0
 prebind + 未知 id             → 回落公共数据 experience=1（不猜）
 无头 + 同 IP（已被可信头学过）→ 按 IP 映射回 210
 ```
+
+### 10.3 v0.7.0-alpha.2：身份不可信时引擎"不盖头"，以及"只发 Source"的约定（2026-11-24 13:50）
+
+产品侧 alpha.2 新增：`_getmotd_seen` / `_identity_uncertain`；GetMotd 校验/切档异常时记
+`⚠ 身份校验失败（…）：本局不再向上游盖身份头` + 事件 `identity-uncertain`（`/status.save.events` 可见），
+`identity_header()` 守卫保证**不确定时完全不盖头**。这与我们"宁可回落公共数据，也不给错人的档"一致。
+
+**我方对应实现（已加，16 条测试）**：
+
+| 上游请求形态 | 覆盖层行为 |
+|---|---|
+| 带 `X-HD2-Account`（+ 任意 Source）| 命中索引 → 回该玩家；命中不到 → 回落公共数据（不猜）|
+| `X-HD2-Account-Source: prebind` + Account | 同上；但**不写 IP 映射** |
+| 只带 `X-HD2-Account-Source: uncertain`（不带 Account）| **跳过 IP 映射与"唯一玩家"兜底**，直接回落公共数据 |
+| 什么都不带 | IP 映射 → 唯一玩家 → 回落公共数据 |
+
+> **更正一条**：上一轮我方建议"引擎盖头时也带上 `X-HD2-Account-Source`"，实际上 **alpha.1 起就已同时发送**
+> （对方 e2e 已断言假上游收到两个头），是我方误读——已在本档更正，避免后续复盘误判。
+>
+> **新增约定（可选增强）**：若引擎希望"不确定时连 IP 兜底也禁用"，可在 uncertain 时只发
+> `X-HD2-Account-Source: uncertain`、不发 Account 头；我方已实现并测试该路径。

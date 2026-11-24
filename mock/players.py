@@ -23,6 +23,10 @@
 2. 本进程学到的 `来源地址 → 玩家` 映射（任何带身份头的请求都会刷新；仅内存）；
 3. 索引里**只有 1 个玩家**时直接用它（单人演示/单机自建服）。
 
+> 此外约定：引擎若判定本局身份**不可信**（GetMotd 校验失败等），可以只发
+> `X-HD2-Account-Source: uncertain`（不带 `X-HD2-Account`）；本层据此**跳过 IP/单玩家兜底**，
+> 直接回落公共数据——避免把历史 IP 映射当成当前身份。
+>
 > 因此多人场景要正确分档，需要**客户端侧（MITM 引擎）在请求上加盖身份头**，
 > 或产品化时改成 Steam 票据校验。见契约档 §9。
 """
@@ -140,6 +144,11 @@ class PlayerStore:
         ids = self.header_ids(headers)
         src = self.header_source(headers)
         self.last_header_source = src
+        if not ids and src:
+            # 引擎显式声明"本局身份不可信"（如 GetMotd 校验失败）：只带 Source、不带 Account。
+            # 此时必须跳过 IP 映射/唯一玩家兜底 —— 否则会把之前学到的映射当成当前身份用。
+            self.last_source = f"uncertain:{src}"
+            return None
         if ids:
             player = self._from_ids(ids)
             tag = src or "unknown"
