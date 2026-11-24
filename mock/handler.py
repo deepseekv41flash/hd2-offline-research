@@ -23,6 +23,7 @@ from typing import Any, Callable
 from . import discovery, timeshift
 from .capture import CaptureStore, CapturedEntry
 from .rules import Match, ReplayIndex, match_state_route, split_path
+from .players import PlayerStore
 from .state import MockState
 
 
@@ -124,8 +125,11 @@ class MockHandler:
         now_fn: Callable[[], datetime] | None = None,
         mission_end_template: dict | None = None,
         customize_template: dict | None = None,
+        players_dir: Path | str | None = None,
     ):
         self.store = store
+        # 按玩家分档覆盖层（自建服形态）：None = 关闭，全部走公共抓包数据
+        self.players = PlayerStore(players_dir) if players_dir else None
         self.index = ReplayIndex(store)
         self.profile = _deep_merge(DEFAULT_PROFILE, profile or {})
         ident = self.profile.get("identity") or {}
@@ -156,7 +160,7 @@ class MockHandler:
 
         # 统计/诊断
         self.stats = {"requests": 0, "state": 0, "exact": 0, "base": 0,
-                      "template": 0, "fallback": 0, "health": 0}
+                      "template": 0, "fallback": 0, "health": 0, "player": 0}
         self.unmatched: dict[str, int] = {}
         self.unknown_time_fields: set[tuple[str, str]] = set()
         self.last_shift: timeshift.ShiftStats | None = None
@@ -172,6 +176,18 @@ class MockHandler:
         if base == "/health":
             self.stats["health"] += 1
             return self._json(self.health(), source="health")
+
+        # 按玩家覆盖层优先：save-export 产物里有的端点直接回该玩家的响应体
+        if self.players is not None:
+            player = self.players.resolve(headers=headers, client_addr=client_addr)
+            if player is not None:
+                payload = self.players.body_for(player, method, raw_path)
+                if payload is not None:
+                    resp = Response(200, payload, "application/json",
+                                    source=f"player:{player.steam_id}")
+                    self.stats["player"] += 1
+                    self._record(method, raw_path, body, resp)
+                    return resp
 
         route = match_state_route(method, raw_path)
         if route is not None:
@@ -419,6 +435,8 @@ class MockHandler:
             "state": self.state.diagnostics(),
             # 发现层诊断（计数 + 统计，不含任何账号/玩家标识）：下一轮复测直接读 keys_miss
             "discovery": self.discovery.diagnostics() if self.discovery is not None else None,
+            # 按玩家覆盖层：只报数量/键名，不落任何玩家标识内容
+            "players": self.players.describe() if self.players is not None else None,
             "unmatched": dict(sorted(self.unmatched.items())),
             "unknown_time_fields": sorted(f"{p}::{ptr}"
                                           for p, ptr in self.unknown_time_fields),

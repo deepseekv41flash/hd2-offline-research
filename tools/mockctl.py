@@ -106,7 +106,8 @@ def cmd_cert_uninstall(args) -> int:
     return 0
 
 
-def _build_handler(data_dir: Path, policy: dict, mission_end_dir: Path | None) -> MockHandler:
+def _build_handler(data_dir: Path, policy: dict, mission_end_dir: Path | None,
+                   players_dir: Path | None = None) -> MockHandler:
     from mock.capture import CaptureStore
 
     store = CaptureStore.load(data_dir)
@@ -118,7 +119,7 @@ def _build_handler(data_dir: Path, policy: dict, mission_end_dir: Path | None) -
     entry = store.find(base_path="/api/Progression/Items/Customize/v2")
     customize = entry.doc if entry and entry.doc is not None else None
     return MockHandler(store, profile=policy, mission_end_template=template,
-                       customize_template=customize)
+                       customize_template=customize, players_dir=players_dir)
 
 
 def cmd_serve(args) -> int:
@@ -163,7 +164,16 @@ def cmd_serve(args) -> int:
         host, port = "127.0.0.1", 18443
 
     mission_end_dir = Path(args.mission_end) if args.mission_end else REPO / "samples" / "mission-end"
-    handler = _build_handler(data_dir, profile, mission_end_dir)
+    # 按玩家分档覆盖层（save-export 产物）：--players-dir 或 profile.players_dir
+    players_dir = None
+    if getattr(args, "players_dir", None):
+        players_dir = Path(args.players_dir)
+    elif profile.get("players_dir"):
+        players_dir = Path(profile["players_dir"])
+    if players_dir is not None and not players_dir.exists():
+        print(f"[serve] players_dir 不存在: {players_dir}")
+        return 2
+    handler = _build_handler(data_dir, profile, mission_end_dir, players_dir)
     net_cfg = profile.get("net") or {}
     trust_proxy = bool(args.trust_proxy_headers or net_cfg.get("trust_proxy_headers"))
     srv = MockServer(handler, host=host, port=port, cert_dir=cert_dir, log_dir=log_dir,
@@ -181,6 +191,8 @@ def cmd_serve(args) -> int:
     scheme = "http" if plain else "https"
     print(f"[serve] data={data_dir}  host={scheme}://{host}:{port}  "
           f"crl={'127.0.0.1:' + str(crl_port) if crl_port else 'off'}")
+    if players_dir is not None:
+        print(f"[serve] players={players_dir}（按玩家覆盖；身份头 X-HD2-Account）")
     if plain:
         print("[serve] 明文模式：传给产品引擎的 upstreamTest 就是 "
               f"\"{host}:{port}\"（例如 127.0.0.1:9099）；不要用它承载真实流量")
@@ -310,6 +322,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", default=None)
     p.add_argument("--port", type=int, default=None)
     p.add_argument("--mission-end", default=None)
+    p.add_argument("--players-dir", default=None,
+                   help="按玩家分档覆盖层根目录（save-export 产物，含 players/ 与 index.json）")
     p.add_argument("--log-headers", action="store_true")
     p.add_argument("--capture-bodies", action="store_true",
                    help="B9：只记登录体 schema（字段名/长度/字符类/hash），不落原值")

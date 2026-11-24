@@ -130,3 +130,43 @@ counts 不一致、身份不一致、缺 index、catalogBuild 缺失、shape-ref
 2. `manifest.counts` 增加 `achievements`（progression.achievements 条数）——① 验收要对比成就条数。
 3. 可选端点 `stats_profile_war.json` / `customize_v2.json` 建议**默认导出**（各 ~0.6 KB / ~16 KB）：
    两者都是**按玩家**数据，缺省会让服务端回落到公共数据、把 A 玩家的定制显示给 B。
+
+## 9. 身份解析缺口（重要，决定多人自建服能不能正确分档）
+
+### 9.1 实现状态：mock 侧覆盖层已就绪 ✓
+
+`mock/players.py` + `mockctl serve --players-dir <save-export 根>` 已实现（10 条测试）：
+解析顺序 **`X-HD2-Account` 头 → 本进程学到的「来源地址→玩家」映射 → 索引里只有一个玩家**；
+命中则直接回该玩家的 `progression/inventory/stats_profile[/stats_profile_war][/customize_v2][/mission_end].json`，
+未命中回落公共抓包数据（**不会回空响应**）。`/health` 新增 `players` 诊断块（只报数量与键名）。
+
+**用 MITM 线样例 A 实测（2026-11-24 13:20）**：
+```
+X-HD2-Account: 11893343864225233967 → experience=210、成就 4、库存 56 行（含 897894480×1）、统计 23 非零（击杀 356105）
+X-HD2-Account: 13887067702231565058 → experience=1、成就 0
+无身份头（索引 2 玩家）              → 回落公共数据 experience=1（不猜）
+```
+
+### 9.2 缺口：**首次读档时，服务端从协议上无法知道这是谁**
+
+实测证据（2026-11-21/23 的登录体外层形状 + 全量请求头）：
+
+| 事实 | 证据 |
+|---|---|
+| 登录体里**没有账号 id** | `POST /api/Account/Login` 346 B：`{buildIdentifier, publicKey, platform, instanceId, token, clientVersion}`；437 B 变体多 `isSuspended/isBanned/betaToolkitAccountId`。无 SteamID64、无 HD2 20 位账号 id |
+| 身份头只在 **lobby 类端点**出现 | `X-HD2-Account` 仅出现在 `PUT /api/lobby`、`DELETE /api/lobby/clear`、`GET /api/lobby/accounts`、`lobby/<id>/member`、`lobby/<id>` —— **存档类端点（`/api/Progression`、`/api/Stats/*`、`/api/Progression/inventory`）一个都没有** |
+| 存档读发生在身份之前 | 启动时序：登录 T+0 → **T+1 s** 读 `/api/Progression` → … → T+21 s 才 `PUT /api/lobby`（那时才有身份头） |
+
+⇒ 多人自建服如果只靠现有客户端协议，**玩家进船首屏那次读档必然分不清是谁**；
+若服务端"猜"或"给默认档"，玩家会看到别人的/空的进度，之后即使学到身份，客户端也已缓存了首屏数据。
+
+### 9.3 三个解法（我方建议 a 先行、b 产品化）
+
+| 方案 | 做法 | 代价 | 评价 |
+|---|---|---|---|
+| **(a) 客户端引擎加盖身份头** | MITM 引擎已经知道 identity（`identity.source / identified_at`），对所有上游请求补 `X-HD2-Account: <steamId64 或 HD2 id>` | 引擎侧小改动（一行注入）；服务端零改造（覆盖层已支持）| **推荐 v1**：可信自建服（自己人/朋友）阶段够用；头可伪造，属于"信任边界靠人" |
+| **(b) Steam 票据校验** | 登录体里 `token`(116 字符) + `platform` 走 Steam Web API `ISteamUserAuth/AuthenticateUserTicket` 换 SteamID64 | 需要 Steam Web API key；多一次外部调用与失败处理 | **产品化正解**：服务端自己知道是谁，且不可冒充 |
+| (c) IP 持久映射 | 记住「来源 IP → 账号」（内存/落盘）| 首次无解、NAT 下会串 | 仅作兜底（覆盖层已实现内存版）|
+
+> 若走 (a)：头名与语义务必与现有用法一致（`X-HD2-Account` = 账号 id，可 SteamID64 或 HD2 20 位），
+> 我方发现层（A 机 discovery）已在用同一个头做账号归属，**两边语义一致才不冲突**。
