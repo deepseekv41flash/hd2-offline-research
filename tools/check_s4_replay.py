@@ -94,6 +94,18 @@ def parse_mock_log(text: str) -> list[dict]:
     return out
 
 
+def _fetch_health(url: str, timeout: float = 3.0) -> dict | None:
+    """取 mock 的 `/health`。**显式禁用环境代理**：本机 https_proxy 会把请求劫走。"""
+    import urllib.request
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(url, timeout=timeout) as resp:
+            doc = json.loads(resp.read().decode("utf-8", "replace"))
+        return doc if isinstance(doc, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _read_logs(path: Path) -> str:
     if path.is_dir():
         return "\n".join(p.read_text(encoding="utf-8", errors="replace")
@@ -101,7 +113,8 @@ def _read_logs(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
 
 
-def evaluate(mock_text: str, engine_text: str, export_root: Path, steam_id: str) -> dict:
+def evaluate(mock_text: str, engine_text: str, export_root: Path, steam_id: str,
+             health: dict | None = None) -> dict:
     checks: list[dict] = []
 
     def add(cid, ok, detail, level="fail"):
@@ -150,20 +163,42 @@ def evaluate(mock_text: str, engine_text: str, export_root: Path, steam_id: str)
             "；".join(sha_ok),
             ("；" + "；".join(size_ok)) if size_ok else ""), level="info")
 
-    # S4-2 身份路径：要有 header 路径，且不允许出现 ip 兜底
+    # S4-2 身份路径（2026-11-24 实机+产品线双方向定稿）
+    #
+    # 硬判据只有一条：**所有玩家档请求都必须靠身份头返回**，不得出现 `ip`/`single`/空
+    #（`ip` = 引擎头没到、只是 IP 兜底；`single` = 索引里只有一个玩家蒙的；空 = 回落 baseline）。
+    #
+    # 为什么**不**要求出现 `via header:getmotd` 的玩家档请求：真实时序里 GetMotd **永远晚于首屏**，
+    # 客户端首屏一次性读完 5 个玩家档端点（全部 `prebind`），之后只在 lobby/friends 端点解析身份，
+    # 不再重读玩家档。产品线独立实测（`s4/evidence.md`）与我们的日志一致：
+    #   21:33:46.605 GET /api/Progression [via header:prebind]  ← 首屏 5 条
+    #   21:33:49.786 POST /api/Pes/GetMotd                     ← 晚 3.2 秒，且是 POST
+    # 因此把"身份升级为 getmotd"降级为**信息项**（若游戏二次读档——换号/重启/任务后——才会带出来）。
     res = [r["resolution"] for r in rows if r["source"] == tag]
     header_hits = sorted({x for x in res if x.startswith("header:")})
-    ip_hits = [r for r in rows if r["source"] == tag and r["resolution"] == "ip"]
-    gotmotd = any(x in ("header:getmotd", "header:getmessages") for x in header_hits)
-    if ip_hits:
-        add("S4-2", False, "出现 %d 次 `via ip`（身份头没到 mock，只是 IP 兜底）" % len(ip_hits))
-    elif not header_hits:
-        add("S4-2", False, "没有任何 `via header:*` 记录 —— 引擎身份头没生效")
-    elif not gotmotd:
-        add("S4-2", False, "只有 prebind 阶段，没有 `header:getmotd`（身份未校验通过？）",
-            level="skip")
+    bad = sorted({x for x in res if not x.startswith("header:")})
+    if not res:
+        add("S4-2", False, "没有任何按玩家返回的请求")
+    elif bad:
+        add("S4-2", False, "玩家档请求出现非身份头解析：%s（`ip` 表示仅 IP 兜底）" % ", ".join(bad))
     else:
-        add("S4-2", True, "身份路径正常：%s" % ", ".join(header_hits))
+        add("S4-2", True, "全部 %d 条玩家档请求均靠身份头返回：%s"
+            % (len(res), ", ".join(header_hits)))
+
+    # info：身份校验是否完成（GetMotd 晚于首屏，属正常；不参与判定）
+    gotmotd_direct = any(x in ("header:getmotd", "header:getmessages") for x in header_hits)
+    hp = (health or {}).get("players") or {}
+    upgraded = str(hp.get("last_header_source") or "")
+    if gotmotd_direct:
+        add("info-identity", True, "玩家档请求直接带 getmotd（本局有二次读档）", level="info")
+    elif upgraded in ("getmotd", "getmessages"):
+        add("info-identity", True,
+            "身份升级为 `%s`（/health 证实）；首屏读档发生在升级之前属正常时序"
+            % upgraded, level="info")
+    else:
+        add("info-identity", True,
+            "未观察到身份升级证据（未提供 --health-url，且无 getmotd 玩家请求）——"
+            "不影响回放可见性判定，但建议附 /health 作旁证", level="info")
 
     # S4-3 幂等：引擎不该再写 SAVE
     save_lines = [ln for ln in engine_text.splitlines() if SAVE_RE.search(ln)]
@@ -203,11 +238,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--engine-log", required=True, help="引擎 proxy.log")
     ap.add_argument("--export", required=True, help="save-export 根目录")
     ap.add_argument("--steam", required=True, help="登录的 SteamID64")
+    ap.add_argument("--health-url", help="mock /health 地址（如 http://127.0.0.1:9099/health）；"
+                                        "用于确认身份校验已完成")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
+    health = _fetch_health(args.health_url) if args.health_url else None
     result = evaluate(_read_logs(Path(args.mock_log)), _read_logs(Path(args.engine_log)),
-                      Path(args.export), args.steam)
+                      Path(args.export), args.steam, health=health)
     print(json.dumps(result, ensure_ascii=False, indent=1) if args.json
           else format_text(result))
     return 0 if result["verdict"] == "PASS" else 1

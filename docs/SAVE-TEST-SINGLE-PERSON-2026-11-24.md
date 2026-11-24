@@ -281,3 +281,45 @@ orphan 的 `discarded` 只有 1 项 `stats.profile`（首屏**安全合并**写�
 
 **换号不混档（MITM 线欠的 ④）在实机上通过**：两个账号各自独立账本、主号 `earned`/`identity` 零污染、
 换号两趟都有日志痕迹、无跨账号数据串档。副产品是上面两条对 G2 行为的精确化认知。
+
+## 10. S4 实机结果（2026-11-24 21:33，机器判据 PASS）
+
+**环境**：引擎 `100.67.88.219:443`（pid 4980，S4 profile，`--config legacy-cfg-9099.json` ⇒ 上游 `127.0.0.1:9099`）；
+我方 mock `127.0.0.1:9099`（`--data s4-fixtures-main --players-dir save-export-sample`）；
+用户用**主号** `76561198968648344` 登录（未切号、未打任务）。
+
+**判定**（`tools/check_s4_replay.py --health-url http://127.0.0.1:9099/health`）：
+
+| 判据 | 结果 | 证据 |
+|---|---|---|
+| S4-1 内容等同 | **PASS** | `/api/Progression` 2468B `0f4893f9f853`、`inventory` 4574B `c1583d25c160`、`Stats/profile/summary` 813B `02e6e6633d13` —— mock sha == 导出文件 sha（产品线经引擎抓包第三方比对亦全等）|
+| S4-2 身份路径 | **PASS** | 5 条玩家档请求全部 `via header:prebind`；**无 `ip`/`single`/空** |
+| S4-3 幂等 | **PASS** | 引擎 **0 条 `SAVE`** 行（另有 `earned 改动 0 字段`、`verified=true`）|
+| ①② 界面数值 | ⚠ **未确认** | 用户主动收工，未做人眼确认（exp 210 / 成就 4 / 库存 56 行 / 统计 23 非零）|
+
+### 10.1 ★ 判据修正：`via header:getmotd` 不能作为硬判据
+
+真实时序（我方 mock 日志 + 产品线 `s4/evidence.md` 双向一致）：
+
+```
+21:33:46.605 GET  /api/Progression            [via header:prebind]   ← 首屏 5 条玩家档读全在这一秒
+21:33:46.778 GET  /api/Stats/profile/summary  [via header:prebind]
+21:33:49.786 POST /api/Pes/GetMotd            ← 比首屏晚 3.2 秒，且是 POST 不是 GET
+21:33:50+     lobby/friends…                  ← 此后不再重读玩家档
+```
+
+⇒ **GetMotd 永远晚于首屏玩家读**（这正是 prebind 存在的理由），之后游戏只在 lobby/friends 端点解析身份
+（体现为 `/health.last_header_source=getmotd`），不会再有玩家档请求带 `getmotd`。
+所以 S4-2 定为：**所有玩家档请求必须靠身份头返回**（出现 `ip`/`single`/空即失败），
+"身份升级为 getmotd"降为**信息项**。
+
+### 10.2 另一个别当证据缺失的点
+
+引擎抓包按**内容 sha 命名且跳过已存在文件**（`hooks/capture.py:69-71`），所以本轮没有新的 `gwe-dump` 行。
+**判据不要依赖"出现新的 gwe-dump 行"**——同 sha 的抓包文件本来就在。
+
+### 10.3 结论
+
+**存档回放可见性（自建服最后一公里）在实机上打通**：客户端首屏读到的就是 `save-export` 产物本身
+（逐字节等同），身份路径是引擎身份头而非 IP 兜底，引擎全程零合并写入。
+唯一未闭环的是**界面数值的人眼确认**（用户主动收工）；机器判据已足以支持"回放数据确实到了客户端"。
