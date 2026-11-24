@@ -243,3 +243,33 @@ prebind + 未知 id             → 回落公共数据 experience=1（不猜）
 >
 > **新增约定（可选增强）**：若引擎希望"不确定时连 IP 兜底也禁用"，可在 uncertain 时只发
 > `X-HD2-Account-Source: uncertain`、不发 Account 头；我方已实现并测试该路径。
+
+## 11. `mission_end.json`（每玩家结算响应体）— 校验结论 2026-11-24 14:00
+
+### 11.1 契约补充（产品侧实现方式）
+- 引擎在 `Mission/end` **入账时整份落盘**：`earned.missions.last_response` / `last_response_at`
+  （只留最近一局、同 missionId 重试不覆盖、解析失败不存）→ `save-export` 原样写 `mission_end.json`
+  （新可选端点；`--no-optional` 可关；老账本无此字段 = 下次打一局后自动具备）。
+- 我方可直接回放：`--players-dir` 覆盖层已支持 `mission_end.json`（实测命中；
+  `POST /api/Operation/Mission/end` → 该玩家最近一局响应体；无该文件时回落 `samples/mission-end` 固定模板）。
+- 校验器新增：**F06** 键集/键序（对参照模板）、**F07** 7 类嵌套数组元素键、**V05** 语义
+  （`experience` 数值 + `repeatingPlayer` 恒空），以及 **F08** `customize_v2`、**F09** `stats_profile_war` 键集。
+
+### 11.2 样例校验结果：PASS 26 / **FAIL 1**
+样例 `D:\mod\tmp\save-export-sample-mission`（v0.8.0-alpha.1，7 文件）：
+- ✓ F06 17 键、**键序与模板 `12b9a872` 逐项一致**
+- ✗ **F07：`progressionPackageUpdates[]` 元素少了 `platformAccountId`**
+  （样例元素 `{id32,level,progress}` vs 模板/真实抓包 `{id32,level,progress,platformAccountId}`）
+- ✓ V05 `experience=936`、`repeatingPlayer=[]`；✓ F08/F09 可选端点键集
+- ✓ M01–M07（身份/键集键序/库存只抬不降/统计单调/counts/baselineFiles 复算）
+
+**归属判定（已排除我方 mock）**：同一台 mock 在**纯模板路径**（不带 `--players-dir`）返回的
+`Mission/end` 里该字段是存在的（实测 `platformAccountId: "76561190000000000"` + `{id32,level,progress}`），
+与真实抓包一致 ⇒ 字段是在**引擎侧**被丢的（要么 `last_response` 落盘前被规范化，要么 Mission/end 响应
+被重写时重建了元素 dict）。
+
+**建议修法**：对上游响应做**深拷贝后原地改值**（如 `progressionPackageUpdates` 只更新 `level/progress`，
+保留 `platformAccountId` 等未知字段），不要按语义重建元素。**另需确认**：客户端实际收到的
+`Mission/end` 响应是否也少了该字段（若少了，这是面向客户端的 live bug，不只是导出问题）。
+**per-player 语义**：`platformAccountId` 是"该玩家自己的账号 id"（官方按玩家返回），导出时应校正为该玩家
+的 `hd2AccountId`/`steamId64`，而不是沿用上游占位值。

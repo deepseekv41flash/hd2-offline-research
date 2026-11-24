@@ -88,11 +88,26 @@ def resolve_baseline(directory: Path) -> dict:
     return picked
 
 
+def resolve_mission_end_template(path_arg: str | None) -> Path | None:
+    """找 Mission/end 参照模板：显式参数 → 仓内 samples/mission-end 里第一个非空模板。"""
+    if path_arg:
+        return Path(path_arg)
+    cands = sorted(Path("samples/mission-end").glob("*.json"))
+    for c in cands:
+        try:
+            if (json.loads(c.read_text(encoding="utf-8")).get("experience") or 0) > 0:
+                return c
+        except Exception:  # noqa: BLE001
+            continue
+    return cands[0] if cands else None
+
+
 def key_order(obj) -> list[str]:
     return list(obj.keys()) if isinstance(obj, dict) else []
 
 
-def check(export_dir: Path, baseline_dir: Path, shape_ref: Path | None = None) -> dict:
+def check(export_dir: Path, baseline_dir: Path, shape_ref: Path | None = None,
+          mission_end_template: Path | None = None) -> dict:
     results: list[dict] = []
 
     def add(cid: str, ok: bool, detail: str) -> None:
@@ -102,6 +117,8 @@ def check(export_dir: Path, baseline_dir: Path, shape_ref: Path | None = None) -
     players_dir = export_dir / "players"
     base = resolve_baseline(Path(baseline_dir))
     ref = resolve_baseline(Path(shape_ref)) if shape_ref else None
+    me_tpl_path = resolve_mission_end_template(str(mission_end_template) if mission_end_template else None)
+    mission_end_tpl = load_json(me_tpl_path) if me_tpl_path and me_tpl_path.exists() else None
     base_p = load_json(base["progression"])
     base_i = load_json(base["inventory"])
     base_s = load_json(base["stats"])
@@ -238,6 +255,42 @@ def check(export_dir: Path, baseline_dir: Path, shape_ref: Path | None = None) -
         # achievements 计数为建议字段：有就查，没有不判 fail
         if "achievements" in counts:
             checks["achievements"] = counts.get("achievements") == len(ach)
+        # ---- 可选端点（alpha.1 起默认导出）：mission_end / customize_v2 / stats_profile_war ----
+        me_path = pdir / "mission_end.json"
+        if me_path.exists() and mission_end_tpl is not None:
+            me = load_json(me_path)
+            add(f"F06[{sid}] mission_end 键集/键序", list(me) == list(mission_end_tpl),
+                f"导出 {len(me)} 键 vs 模板 {len(mission_end_tpl)} 键；多={[k for k in me if k not in mission_end_tpl][:5]}、"
+                f"缺={[k for k in mission_end_tpl if k not in me][:5]}")
+            bad_nested = []
+            for field in ("multipliers", "badges", "rewards", "lootedItemRewards",
+                          "lootedHeavyItemRewards", "progressionPackageUpdates", "levelUpRewards"):
+                got, want = elem_keys(me, field), elem_keys(mission_end_tpl, field)
+                if got is None and want is None:
+                    continue
+                if got != want:
+                    bad_nested.append(f"{field}: 导出{sorted(got)} vs 模板{sorted(want)}" if got and want
+                                      else f"{field}: 导出{sorted(got) if got else '空'} vs 模板{sorted(want) if want else '空'}")
+            add(f"F07[{sid}] mission_end 嵌套元素键", not bad_nested, '; '.join(bad_nested) or "7 类数组元素键与模板一致")
+            rp = me.get("repeatingPlayer")
+            add(f"V05[{sid}] mission_end 语义", isinstance(me.get("experience"), (int, float)) and rp in ([], None),
+                f"experience={me.get('experience')!r}、repeatingPlayer={rp!r}（历史实测恒空，不入账）")
+
+        cus_path = pdir / "customize_v2.json"
+        if cus_path.exists():
+            cus = load_json(cus_path)
+            base_cus = sorted(Path(baseline_dir).glob(BASELINE_GLOBS["customize_v2"]))
+            if base_cus:
+                ref_cus = load_json(base_cus[0])
+                add(f"F08[{sid}] customize_v2 键集", set(cus) == set(ref_cus),
+                    f"导出 {sorted(cus)[:6]} vs 基线 {sorted(ref_cus)[:6]}")
+
+        war_path = pdir / "stats_profile_war.json"
+        if war_path.exists():
+            war = load_json(war_path)
+            add(f"F09[{sid}] stats_profile_war 键集", set(war) == set(base_s),
+                f"导出 {len(war)} 键 vs 基线 stats {len(base_s)} 键")
+
         add(f"V04[{sid}] counts 自检", all(checks.values()),
             f"{counts} | 逐个对={checks} | 实际 exp={prog.get('experience')} 行={len(inv.get('items') or [])} "
             f"非零={sum(1 for v in stats.values() if v)} 成就={len(ach)}")
@@ -266,6 +319,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--baseline", required=True, help="基线抓包目录（空号或主号）")
     ap.add_argument("--shape-ref", default=None,
                     help="参照基线（基线里某些数组为空时，用它学元素形状；通常给另一套基线）")
+    ap.add_argument("--mission-end-template", default=None,
+                    help="Mission/end 参照模板（默认取 samples/mission-end 里 exp>0 的第一个）")
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     args = ap.parse_args(argv)
 
@@ -275,7 +330,8 @@ def main(argv: list[str] | None = None) -> int:
         pass
 
     report = check(Path(args.export), Path(args.baseline),
-                   Path(args.shape_ref) if args.shape_ref else None)
+                   Path(args.shape_ref) if args.shape_ref else None,
+                   Path(args.mission_end_template) if args.mission_end_template else None)
     print(json.dumps(report, ensure_ascii=False, indent=1) if args.json else format_text(report))
     return 0 if report["verdict"] == "PASS" else 1
 
