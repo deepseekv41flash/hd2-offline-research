@@ -68,6 +68,22 @@ def parse_log(text: str) -> list[dict]:
     return rows
 
 
+def filter_window(rows: list[dict], *, since: str = "", until: str = "") -> list[dict]:
+    """按时间窗过滤（`HH:MM:SS` 前缀比较即可，日志时间戳零填充定宽）。
+
+    用途：一次联调里日志文件会混着探针/自检流量（例：验收前的 curl 自测），
+    只统计验收窗口内的真实流量才能和对方引擎日志逐条对账。
+    """
+    out = []
+    for r in rows:
+        if since and r["ts"] < since:
+            continue
+        if until and r["ts"] > until:
+            continue
+        out.append(r)
+    return out
+
+
 def summarize(rows: list[dict], *, include_noise: bool = False) -> dict:
     agg: dict[tuple[str, str], dict] = {}
     for r in rows:
@@ -116,6 +132,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("log", help="mock.log 路径")
     ap.add_argument("--json", action="store_true", help="输出 JSON（便于贴进验收档）")
     ap.add_argument("--include-noise", action="store_true", help="把 /health 等探针流量也算进来")
+    ap.add_argument("--since", default="", help="只统计该时刻之后（含），格式 HH:MM:SS")
+    ap.add_argument("--until", default="", help="只统计该时刻之前（含），格式 HH:MM:SS")
     args = ap.parse_args(argv)
 
     try:
@@ -127,7 +145,9 @@ def main(argv: list[str] | None = None) -> int:
     if not path.exists():
         sys.exit(f"日志不存在: {path}")
     rows = parse_log(path.read_text(encoding="utf-8", errors="replace"))
+    rows = filter_window(rows, since=args.since, until=args.until)
     summary = summarize(rows, include_noise=args.include_noise)
+    summary["window"] = {"since": args.since, "until": args.until}
     if args.json:
         print(json.dumps(summary, ensure_ascii=False, indent=1))
     else:

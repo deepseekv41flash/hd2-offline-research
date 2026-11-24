@@ -72,3 +72,21 @@ def test_cli_reads_file_and_outputs_json(tmp_path: Path, capsys):
     import json as _json
     data = _json.loads(capsys.readouterr().out)
     assert data["total_lines"] == 7
+
+
+def test_filter_window_keeps_only_interval():
+    rows = mrs.parse_log(SAMPLE)
+    kept = mrs.filter_window(rows, since="11:39:46.450", until="11:39:46.480")
+    assert [r["path"] for r in kept] == ["/api/Operation/Mission/end"]
+    assert mrs.filter_window(rows, since="23:00:00") == []
+
+
+def test_cli_window_filters_and_records_it(tmp_path: Path, capsys):
+    log = tmp_path / "mock.log"
+    log.write_text(SAMPLE, encoding="utf-8")
+    rc = mrs.main([str(log), "--json", "--since", "11:39:46.450", "--until", "11:39:46.480"])
+    assert rc == 0
+    import json as _json
+    data = _json.loads(capsys.readouterr().out)
+    assert data["window"] == {"since": "11:39:46.450", "until": "11:39:46.480"}
+    assert data["total_lines"] == 1
