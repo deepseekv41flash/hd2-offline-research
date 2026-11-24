@@ -7,7 +7,7 @@
 >
 > 需要志愿者的只剩"双客户端同局"这类**联机**行为（见 §4），存档本身不依赖它。
 
-## 1. 当前环境实况（2026-11-24 20:45 核对）
+## 1. 当前环境实况（2026-11-24 20:45 核对，20:56 有更新见 §6.1）
 
 | 项 | 状态 |
 |---|---|
@@ -15,7 +15,7 @@
 | 本机 hosts HD2 行 | 无（MITM 线恢复常规环境时清掉/未写） |
 | 产品版本 | `D:\mod\release-test\current` = `v0.9.0-alpha.2`（含存档层 G1–G6 + 事件流）|
 | 本机 mock | 代码就绪（`--plain`、`--players-dir` 覆盖层），随时可起 |
-| save-export 样例 | `D:\mod\tmp\save-export-sample-mission` / `-mainbaseline` / `-ledgeronly`（v0.9.0-alpha.2 口径，已 J01–J11 全绿）|
+| save-export 样例 | `D:\mod\tmp\save-export-sample`（**210 口径 / 成就 4 / 统计 23 非零**，S4 用它）+ `-mission`（1146 口径 / 2 局）/ `-mainbaseline` / `-ledgeronly`（v0.9.0-alpha.2 口径，已 J01–J11 全绿）|
 | A 机（106.52.201.42） | `hd2-discovery` active；证书有效至 **2026-11-25 20:07**；**尚未部署** `players.py` 覆盖层（handler 仍为 `6d86d00b…` 旧版）|
 
 ## 2. 单人可测清单（不需要志愿者）
@@ -24,8 +24,8 @@
 |---|---|---|---|---|---|
 | **S1** | 存档闭环：一局 → 结算 → 重启 → 进度保持 | 起隔离引擎 + 本机官方服/官方环境，单人打一局，退出重进 | exp/货币/成就/统计按响应累加且重启不回退；账本 `earned` 与响应逐字段一致 | 15–20 min | M6 已部分覆盖（官方服 ①②③），可作**常驻回归** |
 | **S2** | **换号不混档**（MITM 线欠的 ④）| 同一台机器切换 Steam 账号（`76561198968648344` ↔ `76561199881579811`）各登录一次 | 每人只看到自己账本；`identity.source` 正确切换；不产生 orphan/串档 | 10–15 min | ⚠ 未验（MITM 线原以为需要第二人，其实单人切号即可）|
-| **S3** | 服务端给得很少/全空时的兜底 | 本机 mock 用空号数据集（`state/dist/save-fixtures-fresh-raw`）+ 严格空 inventory | ①exp 抬到账本值 ②inventory 回填（897894480×1/3608481516×910）③stats 抬回 ④Mission/end 入账 | 15 min | M6 已完成一次；可脚本化为回归 |
-| **S4** | **存档回放的客户端可见性**（覆盖层最后一公里）| `save-export` 产物 → `mockctl serve --plain --players-dir <导出根>` → 客户端登录该账号 | 游戏内**界面**显示该玩家进度/物品/成就（不是只看 mock 响应字节）| 20–30 min | ⚠ **从未验过**（我方此前只验证了 mock 返回正确 JSON）|
+| **S3** | 服务端给得很少/全空时的兜底 | 本机 mock 用空号数据集（`state/dist/save-fixtures-fresh-raw`）+ 严格空 inventory | ①exp 抬到账本值 ②inventory 回填（897894480×1/3608481516×910）③stats 抬回 ④Mission/end 入账 | 15 min | M6 已完成一次；可脚本化为回归。⚠ 该数据集 GetMotd 是**副号** `76561199881579811`，要"主号口径"须换 `D:\mod\tmp\s4-fixtures-main` |
+| **S4** | **存档回放的客户端可见性**（覆盖层最后一公里）| `save-export` 产物 → `mockctl serve --plain --players-dir <导出根>` → 客户端登录该账号（**定稿命令与口径见 §7**）| 游戏内**界面**显示该玩家进度/物品/成就（不是只看 mock 响应字节）| 20–30 min | ⚠ **从未验过**（我方此前只验证了 mock 返回正确 JSON）|
 | **S5** | 跨会话/跨天持久性 | 结算后关闭引擎与游戏，次日再开 | pending 24h 上限、会话基准重建一次、启动不再等身份 | 跨天 | 部分单测覆盖，缺实机 |
 | **S6** | 异常回滚 | 手工破坏账本/`.bak`/半截写，再启动 | 回退到 `.bak`、不丢整档、日志有 WARN | 10 min | 单测覆盖较多，实机未压 |
 | **S7** | 购买/消耗写路径容忍度 | 在自建服（mock 回 `200 {}`）里买一件物品/消耗战备 | 游戏不崩、不重复扣、账本按响应/`expectedCost` 兜底；界面状态合理 | 15 min | ⚠ **未验**，自建服必踩（mock 对这两个端点当前是 fallback `{}`）|
@@ -61,3 +61,62 @@
 
 > 依赖：S2/S4/S7 都需要 **MITM 线起隔离引擎**（他们的 `v0.9.0-alpha.2` + 隔离状态目录）；
 > mock 侧与判据脚本我方随时可起，不需要额外人力。
+
+## 6. MITM 线修正（2026-11-24 20:50，三处我原方案会踩空）
+
+对照他们的隔离引擎说明（`D:\mod\tmp\save-test-20261124\README-for-research-line.md`）后修正：
+
+| # | 我原方案 | 修正后 | 原因 |
+|---|---|---|---|
+| C1 | `--data state/dist/save-fixtures-fresh-raw` | **`--data D:\mod\tmp\s4-fixtures-main`** | `save-fixtures-fresh-raw` 的 GetMotd 是**副号** `76561199881579811`，拿它当主号基线会看到别人的界面 |
+| C2 | `--players-dir save-export-sample-mission` | **`--players-dir D:\mod\tmp\save-export-sample`** | `-mission` 的 manifest 是 exp 1146 / missions 2 口径；`save-export-sample` 才是 exp 210 / 成就 4 / 统计 23 非零 |
+| C3 | 期望库存 `3608481516=910` | **回放值 = 1000** | 空号基线 ×1000，`max(1000, 910) = 1000`；910 只在 M6「服务端空」口径出现（那是账本值，不是回放值）|
+
+配套修正：
+- **S4 判据**改为「引擎 **0 条 `SAVE REWRITE/INV/STATS`**」。save-export 产物已含账本值，若引擎还要「把账本写回服务端」说明合并没生效；
+  而 M6 的 SAVE 行是「服务端空 → 引擎补写」的签名，**两者不能混用**。
+- **`settlements.jsonl` 不是运行时产物**：运行时账本只在 `earned.missions.last_response`；
+  `settlements.jsonl` 由 `hd2proxy save-export` 生成 ⇒ S2/S4 期间隔离目录里**不该**出现它（出现即 bug，或说明有人跑了导出）。
+- **`_orphan/` 的前提**：换号前**本局有写入**（整档回滚 + 脏档另存，设计内）；只登录进船→切号**不该**出现。
+
+### 6.1 20:56 环境更新（覆盖 §1 对应行）
+
+| 项 | 20:56 实况 |
+|---|---|
+| 本机 443 | `100.67.88.219:443` LISTENING（pid 25220，引擎 `0.9.0-alpha.2`，S2 隔离配置；20:54:08 重启过一次，旧 pid 38852 于 20:53:03 退出）|
+| 本机 hosts | HD2 行在（测试期间**不能清**，游戏靠它连引擎）|
+| 9099 | 空闲（留给 S4 的 mock）|
+| 游戏进程 | 未运行（Steam 在跑）|
+| S2 状态 | before 快照已取，**尚未开跑**（无第二账本、日志无换号记录）|
+
+## 7. S4 定稿执行口径（可直接照抄）
+
+```bash
+# ① MITM 线把隔离引擎切到 S4 配置（他们约 15 秒）：加 --config .../s4/legacy-cfg-9099.json
+#    ⚠ v2 profile 没有 upstreamTest 字段，profile + legacy-cfg 两个都必须给
+# ② 我方起 mock（明文，127.0.0.1:9099）
+python tools/mockctl.py serve --plain \
+  --data D:/mod/tmp/s4-fixtures-main \
+  --players-dir D:/mod/tmp/save-export-sample \
+  --port 9099 \
+  --log-dir D:/mod/tmp/save-test-20261124/mocklogs
+# ③ 用户主号（76561198968648344）启动游戏登录进船
+# ④ 判定
+python tools/mock_request_summary.py --log-dir D:/mod/tmp/save-test-20261124/mocklogs --json
+```
+
+**四条判据**：
+1. 游戏**界面**显示：等级经验 **210** / 成就 **4** / 统计非零 **23 项**；
+2. 装备/库存：`897894480 = 1`、`3608481516 = 1000`；库存总行数 **56**；
+3. mock 日志命中 `[player:76561198968648344]`（证明按玩家分档生效，不是 fallback 到公共档）；
+4. 引擎日志 **0 条** `SAVE` 行（幂等；出现即合并未生效）。
+
+## 8. S2 判据（换号不混档）— 定稿
+
+1. 主号账本 `steam_76561198968648344.json` **逐字节不变**（sha256 对比；`source=getmotd`、exp 210、库存 2 行不变）；
+2. 新增 `steam_76561199881579811.json`（副号独立账本，identity 指向副号）；
+3. `_last.json` 依次指向**最后登录**的账号；
+4. 引擎日志出现 `⚠ 身份切换：…A（已识别）→ …B；不合并`；
+5. `_orphan/` **不出现**（三趟都没打任务，本局无写入；出现了说明判据②的前提被破坏，要查日志）。
+
+判据工具：`python tools/save_state_snapshot.py snapshot|diff`（已含 9 条单测，全量 263 passed）。
