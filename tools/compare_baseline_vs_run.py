@@ -40,13 +40,17 @@ PERIOD_MIN_S = 2.0            # 小于 2 s 的间隔不当作"周期"（心跳�
 
 # ---------------------------------------------------------------- 读取一轮 capture
 def _is_preflight(rec: dict) -> bool:
-    """自检请求：长度 72 且 body 以 PREFLIGHT 开头（拿不到 body 时按长度兜底）。"""
+    """识别采集器的开窗自检（必须排除，否则它的长间隔会污染抖动统计）。
+
+    判据用**数据特征**而不是文件名（落盘名里不一定有 PREFLIGHT 字样 —— 2026-11-25 第 4 轮
+    就因此漏判：自检 72 B 进了统计，制造出 110 s 的假间隔，把"抖动范围"判成黄）：
+      长度 == 72 且 **没有** `user-agent` 且 **没有** `x-eos-version`。
+    真实的 EAC 请求这两个头必有其一。
+    """
     if int(rec.get("req_len") or 0) != PREFLIGHT_LEN:
         return False
-    raw = {d.get("direction"): d for d in (rec.get("raw") or [])}
-    item = raw.get("req") or {}
-    name = item.get("file") or ""
-    return "PREFLIGHT" in name or not name      # 名字里通常带路径，兜底当自检
+    hd = {str(k).lower(): v for k, v in (rec.get("req_headers") or {}).items()}
+    return not hd.get("user-agent") and not hd.get("x-eos-version")
 
 
 def load_run(capture_dir: Path) -> dict:
@@ -144,14 +148,19 @@ def freeze(run: dict) -> dict:
 
 
 def dominant_periods(dts_ms: list[int], min_s: float = PERIOD_MIN_S,
-                     top: int = 6) -> list[float]:
-    """粗粒度"周期"提取：把间隔按 1 s 分桶，出现 ≥2 次的桶即候选周期。"""
+                     top: int = 6, min_hits: int = 3) -> list[float]:
+    """粗粒度"周期"提取：间隔按 1 s 分桶，**出现 ≥3 次**的桶才算候选周期。
+
+    为什么从 ≥2 提到 ≥3：2026-11-25 第 4 轮（**无注入的干净复现**）用 ≥2 时
+    基线 {3,5,7} vs 本轮 {4,5,6,7} 被判"新增周期=红" —— 纯抖动导致的假阳性。
+    判据必须先在干净轮上稳定，才能用于判注入。
+    """
     buckets: dict[int, int] = {}
     for d in dts_ms:
         s = round(d / 1000.0)
         if s >= min_s:
             buckets[s] = buckets.get(s, 0) + 1
-    cand = sorted(((s, c) for s, c in buckets.items() if c >= 2), key=lambda kv: -kv[1])
+    cand = sorted(((s, c) for s, c in buckets.items() if c >= min_hits), key=lambda kv: -kv[1])
     return [float(s) for s, _ in cand[:top]]
 
 
@@ -181,10 +190,15 @@ def compare(baseline: dict, run: dict) -> dict:
     base_periods = set(baseline.get("periods_s") or [])
     cur_periods = set(dominant_periods(cur_dts))
     new_periods = sorted(cur_periods - base_periods)
-    if new_periods:
+    # 只有"**明显更快**的新周期"才算被追问（如 12 s → 3 s）。
+    # 抖动（基线 5 s、本轮 4 s 也在桶里）**不算** —— 第 4 轮无注入的干净复现已证：
+    # 用"高频新周期"判会把纯抖动误报成红。
+    base_min = min(base_periods) if base_periods else None
+    faster = [x for x in new_periods if base_min and x < base_min * 0.7]
+    if faster:
         rows.append({"signal": "新增周期", "verdict": "红",
-                     "detail": "出现基线没有的周期：%s s（基线 %s s）"
-                               % (new_periods, sorted(base_periods))})
+                     "detail": "出现明显更快的新周期：%s s（基线 %s s，本轮 %s s）"
+                               % (faster, sorted(base_periods), sorted(cur_periods))})
     else:
         base_rng = baseline.get("dt_ms_range") or [0, 0]
         wider = False

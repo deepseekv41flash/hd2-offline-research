@@ -45,9 +45,22 @@ def _base(msgs: list[dict]) -> dict:
 
 
 def test_preflight_excluded_from_count(tmp_path: Path):
-    """72 B 的 PREFLIGHT 自检必须被排除（第 3 轮踩过的坑）。"""
-    d = _cap(tmp_path, [{"len": 72, "resp": 919}, {"len": 388}, {"len": 4904}])
-    assert cb.load_run(d)["v8"] and len(cb.load_run(d)["v8"]) == 2
+    """72 B 且无 UA/无 x-eos-version 的自检必须被排除（第 3/4 轮踩过的坑）。"""
+    d = tmp_path / "cap"
+    d.mkdir(parents=True)
+    rows = [
+        {"t": "10:00:00", "host": "api.epicgames.dev", "method": "POST",
+         "path": "/anticheat/v8/games/client/message/", "req_len": 72, "resp_len": 919,
+         "ua": None, "req_headers": {}},
+        {"t": "10:00:05", "host": "api.epicgames.dev", "method": "POST",
+         "path": "/anticheat/v8/games/client/message/", "req_len": 388, "resp_len": 1289,
+         "ua": UA, "req_headers": {"user-agent": UA, "x-eos-version": "1.19.1.2"}},
+        {"t": "10:00:10", "host": "api.epicgames.dev", "method": "POST",
+         "path": "/anticheat/v8/games/client/message/", "req_len": 4904, "resp_len": 1409,
+         "ua": UA, "req_headers": {"user-agent": UA, "x-eos-version": "1.19.1.2"}},
+    ]
+    (d / "mitm.jsonl").write_text(("\n").join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    assert len(cb.load_run(d)["v8"]) == 2
 
 
 def test_identical_run_is_green(tmp_path: Path):
@@ -113,3 +126,48 @@ def test_freeze_writes_expected_fields(tmp_path: Path):
         assert k in base
     assert base["req_len_max"] == 33280 and base["count"] == 2
     assert base["items"][0]["ua"].endswith("(1.8.47139.0)")
+
+
+def test_preflight_excluded_by_headers_not_filename(tmp_path: Path):
+    """自检识别要按**头**判（无 UA/无 x-eos-version），不能靠文件名。
+
+    第 4 轮实测：落盘名里没有 PREFLIGHT 字样，靠文件名会漏判，
+    自检的 110 s 间隔把"抖动范围"判成黄。
+    """
+    d = tmp_path / "cap"
+    d.mkdir(parents=True)
+    lines = [
+        # 自检：72 B、无 UA、无 x-eos-version
+        json.dumps({"t": "10:00:00", "host": "api.epicgames.dev", "method": "POST",
+                    "path": "/anticheat/v8/games/client/message/", "req_len": 72,
+                    "resp_len": 919, "ua": None, "req_headers": {}}),
+        # 真实消息
+        json.dumps({"t": "10:02:00", "host": "api.epicgames.dev", "method": "POST",
+                    "path": "/anticheat/v8/games/client/message/", "req_len": 388,
+                    "resp_len": 1289, "ua": UA,
+                    "req_headers": {"user-agent": UA, "x-eos-version": "1.19.1.2"}}),
+    ]
+    (d / "mitm.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    run = cb.load_run(d)
+    assert len(run["v8"]) == 1, run["v8"]
+    assert run["v8"][0]["dt_ms"] is None      # 不应出现 120 s 的假间隔
+
+
+def test_jitter_does_not_trip_new_period(tmp_path: Path):
+    """抖动（基线 5 s，本轮 4 s 也在桶里）不该判红 —— 否则干净轮就误报。"""
+    base = {"items": [{"req_len": 388, "dt_ms": 5000} for _ in range(4)],
+            "ua_set": [UA], "req_len_max": 1000, "big_msg_count": 0,
+            "req_len_median": 388, "periods_s": [5.0], "dt_ms_range": [5000, 5000]}
+    msgs = [{"len": 388, "ts": "10:00:%02d" % (i * 4)} for i in range(6)]
+    res = cb.compare(base, cb.load_run(_cap(tmp_path / "j", msgs)))
+    assert next(r for r in res["rows"] if r["signal"] == "新增周期")["verdict"] != "红"
+
+
+def test_faster_period_is_red(tmp_path: Path):
+    """12 s 变 3 s（明显更快）才是"被追问"的红。"""
+    base = {"items": [{"req_len": 388, "dt_ms": 12000} for _ in range(4)],
+            "ua_set": [UA], "req_len_max": 1000, "big_msg_count": 0,
+            "req_len_median": 388, "periods_s": [12.0], "dt_ms_range": [12000, 12000]}
+    msgs = [{"len": 388, "ts": "10:01:%02d" % (i * 3)} for i in range(5)]
+    res = cb.compare(base, cb.load_run(_cap(tmp_path / "k", msgs)))
+    assert next(r for r in res["rows"] if r["signal"] == "新增周期")["verdict"] == "红"
