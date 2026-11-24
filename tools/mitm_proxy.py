@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
+import re
 import socket
 import ssl
 import sys
@@ -146,7 +148,9 @@ class MitmProxy:
                  log_path: Path, capture: bool = True, upstream_cafile: Path | None = None,
                  mock_hosts: set[str] | None = None, mock_ca: Path | None = None,
                  blackhole_hosts: set[str] | None = None,
-                 fake_hosts: set[str] | None = None):
+                 fake_hosts: set[str] | None = None,
+                 dump_dir: Path | None = None, dump_hosts: set[str] | None = None,
+                 dump_paths: str = "", dump_limit: int = 4096):
         self.host = host
         self.port = port
         self.intercept = {h.lower() for h in intercept}
@@ -159,6 +163,15 @@ class MitmProxy:
         self.mock_ca = Path(mock_ca) if mock_ca else None
         self.blackhole_hosts = {h.lower() for h in (blackhole_hosts or set())}
         self.fake_hosts = {h.lower() for h in (fake_hosts or set())}
+        # 原始字节落盘（默认全关）：只对 dump_hosts 命中且 dump_paths 正则匹配的请求生效。
+        # 为什么需要：EAC 上报体是不可读的 octet-stream，只有拿到**干净会话的原始字节基线**，
+        # 将来注入后才能做"上报指纹对比"（体积/节奏/字节差）。默认只存前 dump_limit 字节，
+        # 避免把整段票据/令牌落盘；dump_limit=0 表示全量。
+        self.dump_dir = Path(dump_dir) if dump_dir else None
+        self.dump_hosts = {h.lower() for h in (dump_hosts or set())}
+        self._dump_re = re.compile(dump_paths) if dump_paths else None
+        self.dump_limit = int(dump_limit)
+        self._dump_seq = 0
         self._lock = threading.Lock()
         self.stats = {"connect": 0, "intercepted": 0, "chained": 0, "requests": 0,
                       "bytes_in": 0, "bytes_out": 0, "tls_fail": 0}
@@ -177,6 +190,30 @@ class MitmProxy:
         ctx.set_alpn_protocols(["http/1.1"])
         return ctx
 
+    # ---- 原始字节落盘（可选，受 host+path 双重过滤）----
+    def _maybe_dump(self, rec: dict, *, direction: str, body: bytes) -> dict | None:
+        """命中的请求把原始字节写成 .bin 并返回索引项；不命中返回 None。"""
+        if self.dump_dir is None or not body:
+            return None
+        host = str(rec.get("host") or "").lower()
+        if host not in self.dump_hosts:
+            return None
+        path = str(rec.get("path") or "")
+        if self._dump_re is not None and not self._dump_re.search(path):
+            return None
+        with self._lock:
+            self._dump_seq += 1
+            seq = self._dump_seq
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", path.strip("/"))[:60] or "root"
+        name = "%04d_%s_%s_%s_%s.bin" % (
+            seq, str(rec.get("method") or "GET"), host.split(".")[0], safe, direction)
+        self.dump_dir.mkdir(parents=True, exist_ok=True)
+        keep = body if self.dump_limit <= 0 else body[: self.dump_limit]
+        (self.dump_dir / name).write_bytes(keep)
+        return {"file": name, "bytes": len(body),
+                "written": len(keep), "truncated": len(keep) < len(body),
+                "sha256": hashlib.sha256(body).hexdigest()}
+
     # ---- 日志：只落 schema ----
     def _log(self, rec: dict) -> None:
         from mock.bodycapture import shape_of
@@ -189,6 +226,15 @@ class MitmProxy:
         if self.capture and resp_body is not None:
             line["resp"] = (shape_of(resp_body) if len(resp_body) <= MAX_CAPTURE
                             else {"bytes": len(resp_body), "format": "too-large"})
+        dump = []
+        for direction, body in (("req", req_body), ("resp", resp_body)):
+            if body is not None:
+                item = self._maybe_dump(rec, direction=direction, body=body)
+                if item:
+                    item["direction"] = direction
+                    dump.append(item)
+        if dump:
+            line["raw"] = dump
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self._lock, open(self.log_path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(line, ensure_ascii=False) + "\n")
@@ -452,6 +498,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--fake-hosts", default="",
                    help="逗号分隔：这些域名一律回 200 {}（模拟本地私服）")
     p.add_argument("--log", type=Path, default=Path("state/evidence/t6/mitm.jsonl"))
+    p.add_argument("--dump-bodies", type=Path, default=None,
+                   help="原始字节落盘目录（默认关）；只对 --dump-hosts 命中且 --dump-paths 匹配的请求生效")
+    p.add_argument("--dump-hosts", default="",
+                   help="逗号分隔；配合 --dump-bodies，限定只落这些 host 的原值")
+    p.add_argument("--dump-paths", default="",
+                   help="正则；配合 --dump-bodies，进一步限定 path（如 '/anticheat/v8'）")
+    p.add_argument("--dump-limit", type=int, default=4096,
+                   help="每个 body 最多落多少字节（默认 4096；0 = 全量）")
     args = p.parse_args(argv)
     proxy = MitmProxy(
         host=args.host, port=args.port,
