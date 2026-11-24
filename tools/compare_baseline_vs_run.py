@@ -314,6 +314,11 @@ def main(argv: list[str] | None = None) -> int:
 
     run = load_run(Path(args.run))
     if args.freeze:
+        # 护栏：0 条 v8 的轮次不能当锚（否则锚是空的，之后每轮都跟"空"比）
+        if not run["v8"]:
+            print("拒绝对 0 条 v8 的轮次执行 --freeze（锚不能是空的）；"
+                  "先确认链路存活，再重新采集。")
+            return 2
         base = freeze(run)
         out = Path(args.out) if args.out else Path(args.run) / "baseline-v8.json"
         out.parent.mkdir(parents=True, exist_ok=True)

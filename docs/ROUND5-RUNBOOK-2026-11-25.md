@@ -106,6 +106,21 @@ python tools/compare_baseline_vs_run.py --baseline state/evidence/control-launch
 
 > 0 条 v8 判"红"是**错的**（会把"没采到"误报成"被感知"），已改成"无结论"+退出码 3。
 
+## 2.7 轮次记录卡（**每轮采完必跑**，防三臂混淆）
+
+三臂 + 两个对比 + RE 的毫秒时刻，靠嘴记必乱。每轮采完跑一次，把身份固化到
+`state/evidence/rounds/<date>-<arm>.json`：
+
+```bash
+python tools/eac_round_record.py --arm C --hook-installed true     --run D:/mod/tmp/eac-p6-control     --liveness D:/mod/tmp/eac-p6-control/eac-watch.jsonl     --launcher-seen 01:35:47.100 --launcher-gone 01:36:02.400     --game-appeared 01:35:49.675 --inject-at-ms 8     --re-json D:/mod/work/hd2-eacoff-mode/state/<RE>.json     --out state/evidence/rounds/2026-11-25-C.json
+```
+
+**护栏**：`--arm C` 且 `--hook-installed false` ⇒ 自动降级为 **`A(deg)`** 并打警告。
+理由：C 臂的唯一价值是"启动器真的被改过"；钩子没装上却记成 C，就会把 A 当控制臂用，
+B 的异常会被**错误归因**。这一条由工具强制，不靠人记。
+
+记录卡里含：`counts`（v8/v6/telemetry）、`req_len` 序列、`dt_ms` 序列、`ua_set`、时间轴、链路 `verdict`。
+
 ## 3. 采集前 30 秒自检
 
 - [ ] 端口 `18092` 空闲（`netstat -ano | grep 18092`）

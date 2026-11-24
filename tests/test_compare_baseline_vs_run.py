@@ -215,3 +215,14 @@ def test_main_exit_code_zero_when_green(tmp_path: Path):
     (run2 / "mitm.jsonl").write_text(
         (run_dir / "mitm.jsonl").read_text(encoding="utf-8"), encoding="utf-8")
     assert cb.main(["--baseline", str(base_path), "--run", str(run2), "--json"]) == 0
+
+
+def test_freeze_refuses_empty_run(tmp_path: Path):
+    """0 条 v8 的轮次不许冻结成基线：锚不能是空的（第 5 轮 C 臂链路失败时会踩到）。"""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    (empty / "mitm.jsonl").write_text("", encoding="utf-8")
+    out = tmp_path / "baseline.json"
+    code = cb.main(["--freeze", "--run", str(empty), "--out", str(out)])
+    assert code == 2
+    assert not out.exists()
