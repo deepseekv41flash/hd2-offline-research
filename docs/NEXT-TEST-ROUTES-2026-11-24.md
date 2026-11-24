@@ -92,6 +92,37 @@
 
 **成本**：部署 10 min + 测试 30 min + 证书决策。
 
+### N6.1 ★ 证书死线的真相（2026-11-24 23:35 读源码确认）
+
+A 机证书标注"有效期至 2026-11-25 20:07"，但**真正的行为变更点是 11-25 08:07**：
+
+```python
+# src/hd2proxy/engine/certs.py: ensure_cert()
+remaining = session_remaining_hours(cert_dir)
+usable = remaining is not None and remaining > min_remaining_hours   # 默认 12.0
+if usable and existing_ok(cert_dir, host, days):
+    return {"action": "reused", ...}                                 # 复用，不动信任库
+# 否则 generate_session(force=True) —— **换发新 CA**
+```
+
+`ensure_cert` 在剩余**不足 12 小时**时不再复用，而是**重新签发并换发新 CA**；
+换发后旧 CA 立刻失效，客户端信任库里还是旧 CA ⇒ 游戏报 **Error 60**，必须重跑 `install`（要 UAC）才能恢复。
+（产品日志里就有这条提醒：`⚠ 证书续期换发了新 CA…需重新运行 install / GUI「安装 / 修复」，否则游戏会报 Error 60`，
+2026-11-23 实机踩过一次。）
+
+⇒ **11-25 08:07 之后，任何一次引擎/服务重启 = 静默换发新 CA = 需要一次 UAC 重装**。若在测试中途重启，
+表现就是"莫名其妙 Error 60"，很容易被误判成代码 bug。
+
+| 选项 | 做法 | 代价 | 风险 |
+|---|---|---|---|
+| **A 主动续期（推荐）** | 有人值守时跑 `hd2proxy certs renew --force` → `install`（一次 UAC）→ 重新部署到 A 机 | 1 次 UAC + 5 min | 最低；把不可控的"中途 Error 60"变成可控的一次操作 |
+| B 推迟 | profile 里 `cert.min_remaining_hours: 0`，让引擎复用旧 CA 直到 20:07 | 改配置 | 20:07 仍要处理；且阈值 0 后必须卡在过期前重启，反而更险 |
+| C 跳过 A 机 | N6 改走本机 TUN / 端口转发，不动 A 机证书 | 放弃"真实网络路径"验证 | 发现层 keys 命中率在真实 TLS/反代下的表现测不到 |
+
+**建议**：明天上午前选 **A**，与"要不要做 N6"一起决定——若不做 N6，则至少给 A 机的 `hd2-discovery` 加一个
+`min_remaining_hours: 0` 或干脆不重启它，避免它在 08:07 之后自动换 CA 而我们不知道。
+
+
 ---
 
 ## N7 发现层/大厅回归（阶段2 已签收，防退化）— ✓✓ 现在就能做
