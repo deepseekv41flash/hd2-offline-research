@@ -143,7 +143,7 @@ def test_health_reports_player_overlay(synthetic_capture: Path, tmp_path: Path):
     h.handle("GET", "/api/Progression", headers={"x-hd2-account": HD2_A})
     doc = h.health()
     assert doc["players"]["count"] == 1
-    assert doc["players"]["last_source"] == "header"
+    assert doc["players"]["last_source"] == "header:unknown"
 
 
 def test_store_loads_hd2_id_from_manifest_when_index_lacks_it(tmp_path: Path):
@@ -163,3 +163,51 @@ def test_disabled_overlay_keeps_old_behaviour(synthetic_capture: Path, tmp_path:
     assert h.players is None
     assert h.health()["players"] is None
     assert not h.handle("GET", "/api/Progression").source.startswith("player:")
+
+
+# ---- X-HD2-Account-Source 语义（产品引擎 >=0.7.0-alpha.1） -------------------
+
+def test_prebind_unknown_account_does_not_guess(synthetic_capture: Path, tmp_path: Path):
+    """prebind 断言命中不到索引：即使索引里只有一个玩家，也不能猜（回落公共数据）。"""
+    _write_player(tmp_path, STEAM_A, HD2_A, progression={"experience": 210})
+    h = _handler(synthetic_capture, tmp_path)
+    resp = h.handle("GET", "/api/Progression",
+                    headers={"x-hd2-account": "99999999999999999999",
+                             "x-hd2-account-source": "prebind"})
+    assert not resp.source.startswith("player:")
+    assert h.players.last_source == "header-unresolved:prebind"
+
+
+def test_prebind_does_not_learn_ip_mapping(synthetic_capture: Path, tmp_path: Path):
+    """prebind 是未校验断言 ⇒ 不写 IP 映射；之后的同 IP 无头请求不应被"顺带"认成该玩家。"""
+    _write_player(tmp_path, STEAM_A, HD2_A, progression={"experience": 210})
+    _write_player(tmp_path, STEAM_B, HD2_B, progression={"experience": 1})
+    h = _handler(synthetic_capture, tmp_path)
+    h.handle("PUT", "/api/lobby", client_addr="10.0.0.7",
+             headers={"x-hd2-account": HD2_A, "x-hd2-account-source": "prebind"})
+    assert not h.players.describe()["learned_ips"]
+    resp = h.handle("GET", "/api/Progression", client_addr="10.0.0.7")
+    assert not resp.source.startswith("player:")
+
+
+def test_getmotd_source_resolves_and_learns_ip(synthetic_capture: Path, tmp_path: Path):
+    """getmotd/getmessages 是本局已校验来源 ⇒ 正常解析并写 IP 映射。"""
+    _write_player(tmp_path, STEAM_A, HD2_A, progression={"experience": 210})
+    _write_player(tmp_path, STEAM_B, HD2_B, progression={"experience": 1})
+    h = _handler(synthetic_capture, tmp_path)
+    h.handle("PUT", "/api/lobby", client_addr="10.0.0.8",
+             headers={"x-hd2-account": STEAM_A, "x-hd2-account-source": "getmotd"})
+    assert h.players.describe()["learned_ips"] == 1
+    resp = h.handle("GET", "/api/Progression", client_addr="10.0.0.8")
+    assert resp.source == f"player:{STEAM_A}"
+    assert h.players.last_source == "ip"
+
+
+def test_header_without_source_still_resolves_and_learns(synthetic_capture: Path, tmp_path: Path):
+    """老客户端/探针只带 X-HD2-Account 不带 Source：保持原有行为（解析 + 学 IP）。"""
+    _write_player(tmp_path, STEAM_A, HD2_A, progression={"experience": 210})
+    _write_player(tmp_path, STEAM_B, HD2_B, progression={"experience": 1})
+    h = _handler(synthetic_capture, tmp_path)
+    h.handle("PUT", "/api/lobby", client_addr="10.0.0.9", headers={"x-hd2-account": HD2_A})
+    assert h.players.describe()["learned_ips"] == 1
+    assert h.handle("GET", "/api/Progression", client_addr="10.0.0.9").source == f"player:{STEAM_A}"

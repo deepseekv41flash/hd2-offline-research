@@ -200,3 +200,65 @@ def test_cli_exit_codes(tmp_path: Path, capsys):
 
     (exp / "index.json").unlink()      # 缺 index.json 应报 FAIL 而不是抛异常
     assert vse.main(["--export", str(exp), "--baseline", str(base)]) == 1
+
+
+# ---- baselineFiles 自描述（alpha.1 新增，2026-11-24） -------------------------
+
+def _manifest_with_baseline_files(tmp_path: Path, *, tamper_sha: bool = False,
+                                  tamper_recipe: bool = False) -> dict:
+    import hashlib
+    base = tmp_path / "base"
+    files = {}
+    for ep, name in (("progression", "aaaa_api_Progression.json"),
+                     ("inventory", "bbbb_api_Progression_inventory.json"),
+                     ("stats_profile", "cccc_api_Stats_profile_summary.json")):
+        sha = hashlib.sha256((base / name).read_bytes()).hexdigest()
+        if tamper_sha and ep == "progression":
+            sha = "0" * 64
+        files[ep] = {"name": name, "sha256": sha}
+    recipe = "".join(f"{k}:{files[k]['sha256']}" + chr(10) for k in sorted(files))
+    total = hashlib.sha256(recipe.encode()).hexdigest()
+    if tamper_recipe:
+        total = "1" * 64
+    man = _manifest(counts={"experience": 210, "inventoryRows": 3, "statsNonZero": 2,
+                            "missions": 1, "achievements": 1})
+    man["source"].update({"baselineId": "fresh", "baselineDirResolved": str(base.resolve()),
+                          "baselineFiles": files, "baselineSha256": total})
+    return man
+
+
+def test_baseline_files_recipe_is_verified(tmp_path: Path):
+    base = _write_baseline(tmp_path / "base")
+    prog, inv, stats, _ = _ideal()
+    man = _manifest_with_baseline_files(tmp_path)
+    exp = _write_export(tmp_path / "exp", progression=prog, inventory=inv, stats=stats, manifest=man)
+    report = vse.check(exp, base)
+    assert report["verdict"] == "PASS", [c for c in report["criteria"] if c["status"] == "FAIL"]
+
+
+def test_baseline_sha_recipe_mismatch_fails(tmp_path: Path):
+    base = _write_baseline(tmp_path / "base")
+    prog, inv, stats, _ = _ideal()
+    man = _manifest_with_baseline_files(tmp_path, tamper_recipe=True)
+    exp = _write_export(tmp_path / "exp", progression=prog, inventory=inv, stats=stats, manifest=man)
+    report = vse.check(exp, base)
+    assert any(c["id"].startswith("M06") and c["status"] == "FAIL" for c in report["criteria"])
+
+
+def test_baseline_file_sha_mismatch_against_local_baseline_fails(tmp_path: Path):
+    base = _write_baseline(tmp_path / "base")
+    prog, inv, stats, _ = _ideal()
+    man = _manifest_with_baseline_files(tmp_path, tamper_sha=True)   # 声明的 progression sha 与本地基线不符
+    exp = _write_export(tmp_path / "exp", progression=prog, inventory=inv, stats=stats, manifest=man)
+    report = vse.check(exp, base)
+    assert any(c["id"].startswith("M07") and c["status"] == "FAIL" for c in report["criteria"])
+
+
+def test_old_export_without_baseline_files_still_passes(tmp_path: Path):
+    """alpha.0 时代没有 baselineFiles：只提示，不判失败（校验器向后可用）。"""
+    base = _write_baseline(tmp_path / "base")
+    prog, inv, stats, man = _ideal()
+    assert "baselineFiles" not in man["source"]
+    exp = _write_export(tmp_path / "exp", progression=prog, inventory=inv, stats=stats, manifest=man)
+    report = vse.check(exp, base)
+    assert report["verdict"] == "PASS"

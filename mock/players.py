@@ -17,6 +17,9 @@
 ~1 s 就被读走——所以**多人在线时客户端若不加盖身份头，服务端在这第一读时无法分辨是谁**）：
 
 1. 请求头 `X-HD2-Account`（值可以是 `steamId64` 或 HD2 20 位账号 id）——最可靠；
+   产品引擎（>=0.7.0-alpha.1）还会给 `X-HD2-Account-Source`：`prebind`（仅预绑定、未校验）/
+   `getmotd`/`getmessages`（本局已校验）。**`prebind` 视为"未证实断言"**：命中索引就照给，
+   但**不学 IP 映射**；命中不到就回落公共数据，绝不用"唯一玩家"去猜。
 2. 本进程学到的 `来源地址 → 玩家` 映射（任何带身份头的请求都会刷新；仅内存）；
 3. 索引里**只有 1 个玩家**时直接用它（单人演示/单机自建服）。
 
@@ -64,6 +67,7 @@ class PlayerStore:
         self.by_hd2: dict[str, str] = {}
         self._ip_to_steam: dict[str, str] = {}
         self.last_source = ""
+        self.last_header_source = ""
         self._load()
 
     # ---- 加载 -------------------------------------------------------------
@@ -106,6 +110,16 @@ class PlayerStore:
                 break
         return [p.strip() for p in raw.replace(";", ",").split(",") if p.strip()]
 
+    @staticmethod
+    def header_source(headers: dict | None) -> str:
+        """`X-HD2-Account-Source` 的值（小写）；没有就返回空串。"""
+        if not headers:
+            return ""
+        for key, value in headers.items():
+            if str(key).lower().replace("_", "-") == "x-hd2-account-source":
+                return str(value or "").strip().lower()
+        return ""
+
     def _from_ids(self, ids: list[str]) -> Player | None:
         for ident in ids:
             if ident in self.players:
@@ -116,13 +130,26 @@ class PlayerStore:
         return None
 
     def resolve(self, headers: dict | None = None, client_addr: str = "") -> Player | None:
-        """按「头 → 学到的 IP 映射 → 唯一玩家」顺序解析；解析不到返回 None（回落公共数据）。"""
-        self.remember(headers, client_addr)
+        """按「头 → 学到的 IP 映射 → 唯一玩家」解析；解析不到返回 None（回落公共数据）。
+
+        关键规则（2026-11-24 与产品侧对齐）：
+        * 只要**带了身份头**，就认为客户端已给出身份断言 —— 命中索引就回该玩家，
+          **命中不到就回落公共数据，绝不用"唯一玩家"去猜**（否则会把别人的档给错人）；
+        * `prebind` 是未校验断言：可以照给，但**不写 IP 映射**（避免污染后续无头请求）。
+        """
         ids = self.header_ids(headers)
-        player = self._from_ids(ids)
-        if player is not None:
-            self.last_source = "header"
-            return player
+        src = self.header_source(headers)
+        self.last_header_source = src
+        if ids:
+            player = self._from_ids(ids)
+            tag = src or "unknown"
+            if player is not None:
+                if src != "prebind":
+                    self._learn_ip(client_addr, player)
+                self.last_source = f"header:{tag}"
+                return player
+            self.last_source = f"header-unresolved:{tag}"
+            return None
         if client_addr:
             sid = self._ip_to_steam.get(client_addr)
             if sid in self.players:
@@ -134,13 +161,17 @@ class PlayerStore:
         self.last_source = ""
         return None
 
+    def _learn_ip(self, client_addr: str, player: Player) -> None:
+        if client_addr:
+            self._ip_to_steam[client_addr] = player.steam_id
+
     def remember(self, headers: dict | None = None, client_addr: str = "") -> None:
-        """把「带身份头的请求」学成 IP→玩家 映射（供同一来源后续的无头请求使用）。"""
-        if not client_addr:
+        """把「可信来源的身份头请求」学成 IP→玩家 映射（prebind 不学）。"""
+        if self.header_source(headers) == "prebind":
             return
         player = self._from_ids(self.header_ids(headers))
         if player is not None:
-            self._ip_to_steam[client_addr] = player.steam_id
+            self._learn_ip(client_addr, player)
 
     # ---- 取响应体 ---------------------------------------------------------
     def body_for(self, player: Player, method: str, raw_path: str) -> bytes | None:
@@ -161,4 +192,5 @@ class PlayerStore:
     def describe(self) -> dict:
         return {"count": len(self.players), "root": str(self.root),
                 "players": [p.describe() for p in self.players.values()],
-                "learned_ips": len(self._ip_to_steam), "last_source": self.last_source}
+                "learned_ips": len(self._ip_to_steam), "last_source": self.last_source,
+                "last_header_source": self.last_header_source}

@@ -170,3 +170,55 @@ X-HD2-Account: 13887067702231565058 → experience=1、成就 0
 
 > 若走 (a)：头名与语义务必与现有用法一致（`X-HD2-Account` = 账号 id，可 SteamID64 或 HD2 20 位），
 > 我方发现层（A 机 discovery）已在用同一个头做账号归属，**两边语义一致才不冲突**。
+
+
+## 10. alpha.1 样例复核 + 身份头实现（2026-11-24 13:40 更新）
+
+### 10.1 `save-export` v0.7.0-alpha.1 样例：**PASS 42/42（A）、22/22（B）**
+
+产品侧按建议补齐了 `baselineFiles` / `baselineId` / `baselineDirResolved` / `counts.achievements` /
+可选端点默认导出，样例已重生成。校验器新增三项（M05–M07）：
+
+| 新增检查 | 结果 |
+|---|---|
+| M05 `baselineFiles` 结构（每端点 name+sha256 合法）| A/B 均 ✓（5 个端点）|
+| M06 `baselineSha256` **可复算** | A `f4a71a39…`、B `b2043e21…` 复算一致 ✓ |
+| M07 **与本地基线逐文件一致** | A/B 各核对 5 个端点、差异 0 ✓ |
+
+> **哈希配方已用实测数据反推确认**：`baselineSha256 = sha256("端点名:文件sha256
+" 按端点名排序拼接)`
+> —— 与产品侧发布说明一致，消费方可独立复算。
+>
+> **额外证据（同源核对）**：样例 `baselineFiles` 里的 sha256 与我们仓库存的抓包文件**逐字节相等**
+> （fresh: progression `78db2b64…`、inventory `85bebe5a…`、stats `dccbac58…`、customize `eef46741…`；
+> main: `f288f166…` / `a1e6d9db…` / `dfdad048…` / `544b4168…`）⇒ 产品侧 fixtures 与我们的抓包同源，
+> 两边判据可以对到同一份字节。
+>
+> 报告留存：`state/logs/save-export-check-20261124-v2/sample-{A,B}.txt`。
+> 校验器向后可用：旧导出（无 `baselineFiles`）只提示、不判失败（14 条测试）。
+
+### 10.2 身份头 `X-HD2-Account-Source` 的语义（覆盖层已实现）
+
+产品引擎（>=0.7.0-alpha.1）对所有上游请求补两个头：
+
+| 头 | 值 | 覆盖层行为 |
+|---|---|---|
+| `X-HD2-Account` | SteamID64 优先，否则 HD2 20 位 id | 命中索引 → 回该玩家档 |
+| `X-HD2-Account-Source` | `prebind`（仅预绑定，**未校验**）/ `getmotd` / `getmessages`（本局已校验）| 见下 |
+
+覆盖层规则（`mock/players.py`，4 条测试覆盖）：
+
+1. **只要带了身份头就视为"已给断言"**：命中索引 → 回该玩家；**命中不到 → 回落公共数据，绝不用"唯一玩家"去猜**；
+2. **`prebind` 不写 IP 映射**（未校验断言不该污染后续无头请求）；命中索引时仍可照给（信任边界由服务端决定）；
+3. `getmotd`/`getmessages` 与"无 Source（老客户端/探针）"→ 正常解析并写 IP 映射；
+4. 无任何身份头时维持原逻辑：IP 映射 → 唯一玩家 → 否则回落公共数据。
+
+`/health.players` 现在同时报 `last_source` 与 `last_header_source`（如 `header:getmotd` / `header-unresolved:prebind` / `ip` / `single`）。
+
+**实测（用 alpha.1 样例 A）**：
+```
+getmotd + 76561198968648344   → experience=210、成就 4
+getmessages + 13887067702231565058 → experience=1、成就 0
+prebind + 未知 id             → 回落公共数据 experience=1（不猜）
+无头 + 同 IP（已被可信头学过）→ 按 IP 映射回 210
+```

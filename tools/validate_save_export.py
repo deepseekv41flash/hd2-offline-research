@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -36,13 +37,26 @@ BASELINE_FILES = {
         "progression": "78db2b64_api_Progression.json",
         "inventory": "85bebe5a_api_Progression_inventory.json",
         "stats": "dccbac58_api_Stats_profile_summary.json",
+        "stats_profile_war": "dccbac58_api_Stats_profile_801_summary.json",
+        "customize_v2": "eef46741_api_Progression_Items_Customize_v2.json",
     },
     "main": {
         "progression": "f288f166_api_Progression.json",
         "inventory": "a1e6d9db_api_Progression_inventory.json",
         "stats": "dfdad048_api_Stats_profile_summary.json",
+        "stats_profile_war": "dfdad048_api_Stats_profile_801_summary.json",
+        "customize_v2": "544b4168_api_Progression_Items_Customize_v2.json",
     },
 }
+# manifest.baselineFiles 里的端点名 → 本地基线目录的 glob（找不到就跳过该端点的交叉核对）
+BASELINE_GLOBS = {
+    "progression": "*_api_Progression.json",
+    "inventory": "*_api_Progression_inventory.json",
+    "stats_profile": "*_api_Stats_profile_summary.json",
+    "stats_profile_war": "*_api_Stats_profile_801_summary.json",
+    "customize_v2": "*_api_Progression_Items_Customize_v2.json",
+}
+BASELINE_SHA_RECIPE = 'sha256("endpoint:sha256\n" 按端点名排序拼接)'  # 与产品侧发布说明一致
 
 
 def load_json(path: Path):
@@ -132,6 +146,41 @@ def check(export_dir: Path, baseline_dir: Path, shape_ref: Path | None = None) -
             f"baselineSha256={str(src.get('baselineSha256'))[:12]}…、ledgerSha256={str(src.get('ledgerSha256'))[:12]}…")
         add(f"M04[{sid}] catalogBuild 类型", "catalogBuild" in man and (man["catalogBuild"] is None or isinstance(man["catalogBuild"], str)),
             f"catalogBuild={man.get('catalogBuild')!r}")
+        # M05/M06/M07：baselineFiles 自描述 + 配方复算 + 与本地基线逐字节核对
+        # （alpha.0 时代的导出没有 baselineFiles：缺失时只提示不判失败，保持校验器向后可用）
+        bfiles = src.get("baselineFiles")
+        if bfiles is None:
+            add(f"M05[{sid}] baselineFiles 结构", True,
+                "未提供 baselineFiles（旧格式导出；alpha.1 起应提供，建议补上以便独立复算）")
+        else:
+            ok_bf = isinstance(bfiles, dict) and bool(bfiles) and all(
+                isinstance(v, dict) and isinstance(v.get("name"), str)
+                and SHA256_RE.match(str(v.get("sha256") or ""))
+                for v in bfiles.values())
+            bad = ([k for k, v in bfiles.items()
+                    if not isinstance(v, dict) or not SHA256_RE.match(str(v.get('sha256') or ''))]
+                   if isinstance(bfiles, dict) else [])
+            add(f"M05[{sid}] baselineFiles 结构", ok_bf,
+                f"{len(bfiles) if isinstance(bfiles, dict) else 0} 个端点；缺/坏={bad[:5]}")
+            if ok_bf:
+                recipe_text = "".join(f"{k}:{bfiles[k]['sha256']}" + chr(10) for k in sorted(bfiles))
+                recomputed = hashlib.sha256(recipe_text.encode()).hexdigest()
+                add(f"M06[{sid}] baselineSha256 可复算", recomputed == str(src.get("baselineSha256")),
+                    f"复算 {recomputed[:16]}… vs 声明 {str(src.get('baselineSha256'))[:16]}…")
+                diffs, checked = [], 0
+                for ep, globpat in BASELINE_GLOBS.items():
+                    decl = (bfiles.get(ep) or {}).get("sha256")
+                    if not decl:
+                        continue
+                    cands = sorted(Path(baseline_dir).glob(globpat))
+                    if not cands:
+                        continue
+                    local = hashlib.sha256(cands[0].read_bytes()).hexdigest()
+                    checked += 1
+                    if local != decl:
+                        diffs.append(f"{ep}:{cands[0].name}")
+                add(f"M07[{sid}] 基线逐文件一致", not diffs,
+                    f"baselineId={src.get('baselineId')}；核对 {checked} 个端点，差异={diffs[:5]}")
 
         # ---- shape 保真 ----
         add(f"F01[{sid}] progression 键集/键序", key_order(prog) == key_order(base_p),
