@@ -55,3 +55,39 @@ T6a 用**本仓 CA 对 13 个域名（含 EOS/EAC）做 TLS 终止**，游戏**�
 - 间接证据：① 被描述为"持续整局"，整局量级按外推 ~6 MB/小时；
 - 任务中**独有**的新连接是 **PlayFab Party 的 UDP(DTLS) 数据面**（每局一个专用 Azure VM），**属 Party 不属 EAC**；
 - 要补这条：进任务后用 `scripts/eac_net_probe.py` 采 5–10 分钟即可（需起游戏，得先与 RE 线错开单实例锁）。
+
+## 6. 实测（2026-11-25 00:35–00:39）：hosts 重定向对游戏侧的边界
+
+**实验**：`hosts: 127.0.0.1 api.epicgames.dev` + 我们签的 4-SAN 证书做 **TLS 终结**
+（`tools/mitm_proxy.py --tls-listen 127.0.0.1:443 --tls-host api.epicgames.dev --forward-ip 104.18.124.108`），
+忠实转发到真实 IP；tshark 抓 loopback 取 JA3。用户以 `steam://rungameid/553850` 启动，主菜单停留 240 s。
+
+### 6.1 结果：anticheat 通道 0 条，但抓到 EAC 启动器自己的遥测
+
+| 观测 | 值 |
+|---|---|
+| `/anticheat/v8|v6` 请求 | **0 条**（`req_len_series=[]`）|
+| 成功命中的唯一请求 | `POST /telemetry/data/datarouter/api/v1/public/data?…&AppID=EOSSDK.AntiCheatExt.Launcher&SessionId=…` → **200 / 666 B** |
+| 该请求 UA | **`Easy Anti-Cheat EOS Bootstrapper/1.9.4`** |
+| 到 `127.0.0.1:443` 的 ClientHello | **5 次**，其中 **4 次在握手中被重置**（`ConnectionResetError`），1 次成功 |
+| JA3（4 次重置 / 1 次成功）| `060415e5bacbf8b80253f8e69b33255b`（Schannel 风格，4 次）/ `51c688a0a86d7dc48acfd8141af86002`（BoringSSL 风格，1 次）|
+| hosts 还原 | `identical=True`（15/15 行，`missing`/`extra` 均空）|
+
+### 6.2 结论（可引用）
+
+1. **hosts 对"EAC 启动器"有效**：`Easy Anti-Cheat EOS Bootstrapper` 走系统解析，被我们完整看到
+   （含 `AppID=EOSSDK.AntiCheatExt.Launcher` 与 URL 里的 `SessionId`）。
+   ⇒ **"AntiCheatExt" 是 EOS 侧一个有独立 AppID 的组件**，与游戏进程内的 anticheat 上报**同 host、不同类目**。
+2. **hosts 对"游戏进程内的 EOS/EAC"不完整**：游戏那侧有 4 次带 SNI 的 ClientHello 到我们的监听，
+   但都在握手中被重置 —— 说明它**先试了系统解析**，随后中止并回落到自己的解析（DoH / 启动器下发的 IP 列表）。
+   与 EAC-off 线 socket 观测（游戏直连 `44.233.151.84` / `184.194.175.202` 等真实 IP）一致：**"试了但没成"**，
+   不是"完全没试"。
+3. **可用的 JA3 指纹**：`060415e5…`（Schannel 系）与 `51c688a0…`（BoringSSL 系）已拿到，
+   将来做"注入前后客户端指纹是否突变"就有了基线。
+
+### 6.3 下一步（若要拿到游戏侧 anticheat 明文）
+
+- **首选**：临时阻断到公共 DNS 的 `:53/:853/:443`（`1.1.1.1`、`8.8.8.8`、`dns.google`、`*.cloudflare-dns.com`），
+  迫使 EOS 回落系统解析 ⇒ hosts 生效；**收尾必删规则**并把 `netsh advfirewall show rule` 前后快照写进 meta。
+- 备选：IP 级透明重定向（WinDivert），Secure Boot 下需 WHQL 签名，风险高，暂不做。
+- 注意：这条负结论能省别人一天——**别再只指望 hosts 抓游戏侧 EOS**。
