@@ -273,3 +273,54 @@ prebind + 未知 id             → 回落公共数据 experience=1（不猜）
 `Mission/end` 响应是否也少了该字段（若少了，这是面向客户端的 live bug，不只是导出问题）。
 **per-player 语义**：`platformAccountId` 是"该玩家自己的账号 id"（官方按玩家返回），导出时应校正为该玩家
 的 `hd2AccountId`/`steamId64`，而不是沿用上游占位值。
+
+## 12. `mission_end.json` 修复确认 + JSONL 结算事件流（形态 3）口径
+
+### 12.1 F07 已修复，样例 PASS 27/27（2026-11-24 14:15）
+
+产品侧根因：**公开夹具被脱敏脚本刻意剥掉 `platformAccountId`**（守门测试 `LEAK_MARKERS`），
+上一份样例的本地 mock 直接服务了脱敏夹具 ⇒ 不是引擎丢字段、也不是 live bug。
+修复在 `save-export` 侧：新增 `correct_mission_end()` —— 值校正为**本玩家 identity**（HD2 20 位优先）、
+缺失补齐、`platformAccountId` 放元素最前、深拷贝只改值不重建。
+
+重出样例复跑：**PASS 27 / FAIL 0**，`progressionPackageUpdates[0] = {platformAccountId:"11893343864225233967", id32:277818845, level:5, progress:459}` ✓
+（F06/F07/V05/F08/F09、M01–M07 全绿）。报告 `state/logs/save-export-check-20261124-v4/sample-mission.txt`。
+
+> 建议产品侧加一条回归测试：**任何导出路径**产出的 `mission_end.json` 都必须满足
+> `progressionPackageUpdates[*].platformAccountId == 该玩家 identity`（我方校验器 F07 现也兜这条）。
+
+### 12.2 JSONL 结算事件流：我方消费端口径（待产品侧出样例）
+
+**落盘位置**：每玩家 `players/<steamId64>/settlements.jsonl`（**只追加**，不写全局单文件；
+如需审计可另加可选全局副本）。`--no-optional` 时不产。老玩家首次产生事件即建文件。
+
+**行格式**（每行一个 JSON 对象；UTF-8、LF、无 BOM、不跨行）：
+
+```json
+{"schema":1,"event":"settlement","ts":"2026-11-24T13:32:34+08:00",
+ "saveId":"steam_76561198968648344","steamId64":"76561198968648344","hd2AccountId":"11893343864225233967",
+ "missionId":"22c690d9-51f2-4d4e-be90-22380a69d08a","operationId":1242,"missionIndex":2,
+ "experience":936,
+ "items":{"897894480":1,"3608481516":910},
+ "packages":{"277818845":{"level":5,"progress":459,"platformAccountId":"11893343864225233967"}},
+ "itemSource":"mission_end","catalogBuild":"93e7575a/3021/1007203"}
+```
+
+| 字段 | 语义 |
+|---|---|
+| `schema` / `event` | 行格式版本 / 事件类型（预留 `purchase`、`consume` 等）|
+| `ts` | ISO 8601 带时区 |
+| `saveId` / `steamId64` / `hd2AccountId` | 身份三件套（服务端按此归属）|
+| `missionId` | **去重键**（配合账本近 20 局去重；重试不重复写事件）|
+| `experience` | 本局增量 |
+| `items` | **本局增量**（`mixId → amount`，正=获得）|
+| `packages` | **结算后的绝对 level/progress**（服务端按 max 合并，幂等；不用增量避免重试双加）|
+| `packages[*].platformAccountId` | = 本玩家 identity（与 `mission_end.json` 一致；服务端仅作一致性校验）|
+| `catalogBuild` | 物品目录版本 |
+
+**追加语义要求**：单行 append + `flush`（fsync 可选）——进程被杀最多丢最后一行；
+消费端需容忍坏行（跳过并计数）。**append-only 不回写历史行**。若需要"已导出游标"，
+在 manifest 增 `settlementsCursor`（最后一条 `missionId` 或行号）供对账。
+
+**校验**：我方会在 `validate_save_export.py` 增加 `settlements.jsonl` 逐行 schema 校验（可选文件），
+样例到了即可跑。
