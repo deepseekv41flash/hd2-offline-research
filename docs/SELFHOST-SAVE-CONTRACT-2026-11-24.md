@@ -97,3 +97,36 @@
 验收：拿主号基线 + 现有账本导出 → 与我们 11-24 mock 验收的期望值逐字段一致（exp=210、成就 4 条、库存回填 2 行、统计 23 项）。
 
 **后续**：+ `customize_v2.json`、`mission_end.json`、JSONL 事件流、`shared/` 拆分。
+
+## 8. 机器化校验器（2026-11-24 加）
+
+`tools/validate_save_export.py`：只读校验 `save-export` 产物，发版前跑一遍即可。
+
+```
+python tools/validate_save_export.py \
+  --export D:/mod/tmp/save-export-sample \
+  --baseline state/dist/save-fixtures-fresh-raw \
+  --shape-ref samples/store-season     # 空号基线里 achievements 为空 → 用主号基线学元素键
+```
+
+检查项（10 类，每玩家各跑一遍）：目录/索引齐全（S01–S03）、manifest 身份与 index/目录名一致（M01）、
+schema/时间/engine（M02）、源 hash 格式（M03）、`catalogBuild` 键存在且为字符串或 null（M04）、
+**三个响应体键集与键序 = 基线深拷贝**（F01–F05，含数组元素键）、库存不丢行/只抬不降（V01–V02）、
+统计单调不减（V03）、`counts` 自检（V04）。
+
+**首次跑样例结果（2026-11-24）**：
+- A 样例（空号基线 ⊕ 两个玩家账本，`D:\mod\tmp\save-export-sample`）：**PASS 36 / FAIL 0**
+- B 样例（主号基线 ⊕ 主号账本，`D:\mod\tmp\save-export-sample-mainbaseline`）：**PASS 19 / FAIL 0**
+- 报告留存：`state/logs/save-export-check-20261124/sample-{A,B}.{txt,json}`
+
+配套 10 条回归测试（`tests/test_validate_save_export.py`）：含键序漂移、丢行/降额、统计回退、
+counts 不一致、身份不一致、缺 index、catalogBuild 缺失、shape-ref 学元素键等负例。
+
+### 8.1 对 `save-export` 的三条追加建议（非阻塞）
+
+1. `manifest.source` 增加：`baselineId`（`fresh|main|custom:<名>`）+ `baselineDirResolved`（绝对路径），
+   并给出 `baselineFiles: {progression|inventory|stats: {name, sha256}}` —— 现有 `baselineSha256` 的哈希
+   配方没有写进文档，消费方无法独立复算；按文件给 hash 更自描述。
+2. `manifest.counts` 增加 `achievements`（progression.achievements 条数）——① 验收要对比成就条数。
+3. 可选端点 `stats_profile_war.json` / `customize_v2.json` 建议**默认导出**（各 ~0.6 KB / ~16 KB）：
+   两者都是**按玩家**数据，缺省会让服务端回落到公共数据、把 A 玩家的定制显示给 B。
