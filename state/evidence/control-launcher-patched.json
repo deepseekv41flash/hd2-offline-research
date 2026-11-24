@@ -1,0 +1,161 @@
+{
+ "schema": 1,
+ "source_capture": "D:\\mod\\tmp\\eac-p7-c-3",
+ "frozen_at": "2026-11-25T02:14:24",
+ "count": 17,
+ "ua_set": [
+  "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)"
+ ],
+ "x_eos_version_set": [
+  "1.19.1.2-53289219"
+ ],
+ "req_len_max": 33408,
+ "req_len_median": 4904,
+ "big_msg_count": 5,
+ "dt_ms_median": 6500.0,
+ "dt_ms_range": [
+  3000,
+  60000
+ ],
+ "periods_s": [
+  5.0
+ ],
+ "items": [
+  {
+   "ts": "2026-11-25T02:08:27",
+   "req_len": 388,
+   "resp_len": 1289,
+   "dt_ms": null,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  },
+  {
+   "ts": "2026-11-25T02:08:32",
+   "req_len": 4904,
+   "resp_len": 1409,
+   "dt_ms": 5000,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  },
+  {
+   "ts": "2026-11-25T02:08:37",
+   "req_len": 728,
+   "resp_len": 1351,
+   "dt_ms": 5000,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  },
+  {
+   "ts": "2026-11-25T02:08:42",
+   "req_len": 9192,
+   "resp_len": 9634,
+   "dt_ms": 5000,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  },
+  {
+   "ts": "2026-11-25T02:08:47",
+   "req_len": 7736,
+   "resp_len": 8745,
+   "dt_ms": 5000,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  },
+  {
+   "ts": "2026-11-25T02:08:51",
+   "req_len": 9592,
+   "resp_len": 8746,
+   "dt_ms": 4000,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  },
+  {
+   "ts": "2026-11-25T02:09:27",
+   "req_len": 33408,
+   "resp_len": 1593,
+   "dt_ms": 36000,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  },
+  {
+   "ts": "2026-11-25T02:09:49",
+   "req_len": 23424,
+   "resp_len": 1592,
+   "dt_ms": 22000,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  },
+  {
+   "ts": "2026-11-25T02:09:55",
+   "req_len": 4864,
+   "resp_len": 1593,
+   "dt_ms": 6000,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  },
+  {
+   "ts": "2026-11-25T02:10:02",
+   "req_len": 6576,
+   "resp_len": 2498,
+   "dt_ms": 7000,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  },
+  {
+   "ts": "2026-11-25T02:10:05",
+   "req_len": 4936,
+   "resp_len": 5177,
+   "dt_ms": 3000,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  },
+  {
+   "ts": "2026-11-25T02:10:12",
+   "req_len": 9368,
+   "resp_len": 3394,
+   "dt_ms": 7000,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  },
+  {
+   "ts": "2026-11-25T02:10:18",
+   "req_len": 896,
+   "resp_len": 1593,
+   "dt_ms": 6000,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  },
+  {
+   "ts": "2026-11-25T02:10:39",
+   "req_len": 1104,
+   "resp_len": 1593,
+   "dt_ms": 21000,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  },
+  {
+   "ts": "2026-11-25T02:11:39",
+   "req_len": 1024,
+   "resp_len": 1593,
+   "dt_ms": 60000,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  },
+  {
+   "ts": "2026-11-25T02:11:47",
+   "req_len": 768,
+   "resp_len": 1593,
+   "dt_ms": 8000,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  },
+  {
+   "ts": "2026-11-25T02:12:39",
+   "req_len": 920,
+   "resp_len": 1593,
+   "dt_ms": 52000,
+   "ua": "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)",
+   "x_eos_version": "1.19.1.2-53289219"
+  }
+ ]
+}
