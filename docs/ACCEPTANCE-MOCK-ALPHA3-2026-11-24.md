@@ -77,3 +77,12 @@ diff 校验：`diff -rq state/dist/save-fixtures-fresh-raw state/tmp/accept-main
 - 数据集与日志留存：`state/tmp/accept-main-identity/`、`state/logs/acceptance-20261124/`（`mock.log`、`dataset-diff.txt`、`request-summary.{txt,json}`）。
 - 对账工具：`tools/mock_request_summary.py`（支持 `--since/--until` 时间窗、`--json`；8 条测试）。
 - 对方记录：`docs/ACCEPTANCE-M4.md` 新增 §M6、CHANGELOG 一条（docs-only）。
+
+## 7. 对方收口回执（2026-11-24 12:0x）
+
+- 四项对账 MITM 线复核**全部一致**，记为「三方对账 PASS」。
+- 3 次 `[fallback]` 设置写确认对判据无影响；「设置类写回显」列入双方**遗留项**（需要时再约，我方加两个端点回显即可）。
+- 对方已把三方对账表补进产品仓 `docs/ACCEPTANCE-M4.md` §M6，提交 `1ec1f71` 已推送；
+  证据包 `D:\mod\tmp\evidence-m6-mock\`（含 `verification.json` 四条 pass 布尔）与隔离测试目录保留可复核。
+- 生产引擎已恢复 alpha.3（默认 profile、443、`verify` 3/3 绿）；9099 已释放。
+- **结论：mock / 自建服侧无未结项；存档线 ④ 与 M6 到此闭环。**
