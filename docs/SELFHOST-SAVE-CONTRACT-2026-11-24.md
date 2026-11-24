@@ -355,3 +355,25 @@ J08 ts 为 ISO8601 带显式时区 ✓   J09 来源枚举合法 ✓
 
 我方校验器已加 `settlements.jsonl` 支持（9+1 项，含 manifest 游标），既可随整个导出目录校验，
 也可 `--settlements-file <路径> --steam-id64 … --hd2-account-id …` 单独先验样例（22 条测试）。
+
+### 12.4 v0.9.0-alpha.1 复跑：A **PASS 38/38**、B **PASS 35/35**（2026-11-24 14:50 收口）
+
+两份样例（同机路径）：
+- A `D:\mod\tmp\save-export-sample-mission`（`source=mission_end`，cursor lines=1）
+- B `D:\mod\tmp\save-export-sample-ledgeronly`（`source=ledger-only`，`packages={}`、`missionIndex=null`）
+
+校验器新增 **J11（source 覆盖与计数）** 后复跑：
+
+| 检查 | A | B |
+|---|---|---|
+| J01–J10（逐行/身份/去重/形状/时区/枚举/游标）| ✓ 全绿 | ✓ 全绿 |
+| **J11**：每行显式带 `source` + `manifest.settlements.ledgerOnly` 与文件计数一致 | ✓（0 vs 0）| ✓（1 vs 1）|
+| F06/F07/V05（mission_end 三件套）| ✓ | —（该样例无 mission_end.json，按可选跳过）|
+| M01–M07 + F01–F05（导出整体）| ✓ | ✓ |
+| **合计** | **38/38** | **35/35** |
+
+**JSONL 形态至此收口**：六条口径全部按约定实现（`itemSource` 枚举、`ts` 带偏移、`packages` 绝对 max、
+老局补发带 `source=ledger-only`、`settlementsCursor{lines,lastMissionId,lastTs}`、逐玩家去重追加）。
+我方校验器 23 条测试、全量 **252 passed**。
+
+后续候选（不阻塞）：`shared/` 公共数据拆分开关；事件流加 `purchase`/`consume`（`schema`/`event` 位已留）。

@@ -273,7 +273,8 @@ def _jline(**kw) -> str:
             "missionIndex": 2, "experience": 936, "items": {"897894480": 7},
             "packages": {"277818845": {"level": 5, "progress": 459,
                                        "platformAccountId": "11893343864225233967"}},
-            "itemSource": "rewards", "catalogBuild": "93e7575a/3021/1007203"}
+            "itemSource": "rewards", "catalogBuild": "93e7575a/3021/1007203",
+            "source": "mission_end"}
     base.update(kw)
     return json.dumps(base, ensure_ascii=False)
 
@@ -351,3 +352,19 @@ def test_cli_settlements_file_only(tmp_path: Path, capsys):
     assert rc == 0
     data = json.loads(capsys.readouterr().out)
     assert data["verdict"] == "PASS" and data["passed"] >= 9
+
+
+def test_settlements_source_required_and_counter_consistent(tmp_path: Path):
+    # 缺 source ⇒ J11 FAIL
+    line = json.loads(_jline(missionId="m-1", source="mission_end"))
+    line.pop("source")
+    p = _write_jsonl(tmp_path, [json.dumps(line, ensure_ascii=False)])
+    crit = vse.check_settlements(p, expected=EXPECTED)
+    assert any(c["id"].startswith("J11") and c["status"] == "FAIL" for c in crit)
+
+    # 计数不一致 ⇒ J11 FAIL；一致 ⇒ PASS
+    p2 = _write_jsonl(tmp_path, [_jline(missionId="m-2", source="ledger-only")])
+    bad = vse.check_settlements(p2, expected=EXPECTED, counters={"ledgerOnly": 5})
+    assert any(c["id"].startswith("J11") and c["status"] == "FAIL" for c in bad)
+    good = vse.check_settlements(p2, expected=EXPECTED, counters={"ledgerOnly": 1})
+    assert all(c["status"] == "PASS" for c in good)

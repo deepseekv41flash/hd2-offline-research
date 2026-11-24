@@ -114,7 +114,8 @@ ISO_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}:
 
 
 def check_settlements(path: Path, *, expected: dict | None = None,
-                      cursor: dict | None = None, tag: str = "J") -> list[dict]:
+                      cursor: dict | None = None, counters: dict | None = None,
+                      tag: str = "J") -> list[dict]:
     """校验 `settlements.jsonl`（每玩家一行一局）。返回判据列表（PASS/FAIL）。"""
     results: list[dict] = []
 
@@ -193,6 +194,18 @@ def check_settlements(path: Path, *, expected: dict | None = None,
     add(f"{tag}09 来源枚举", not bad_src and not bad_evsrc,
         f"itemSource 异常={bad_src[:3]}、source 异常={bad_evsrc[:3]}" if (bad_src or bad_evsrc)
         else f"itemSource ∈ {sorted(ITEM_SOURCES)}；source ∈ {sorted(EVENT_SOURCES)}")
+
+    # J11：每行必须显式带 source（消费端不推断）；manifest.settlements 计数器须与文件一致
+    no_src = [r.get("missionId") for r in rows
+              if str(r.get("source") or "") not in EVENT_SOURCES]
+    detail = f"缺/非法 source 的行={no_src[:3]}" if no_src else "每行都显式带 source"
+    if counters is not None and isinstance(counters.get("ledgerOnly"), int):
+        ledger_only = sum(1 for r in rows if str(r.get("source")) == "ledger-only")
+        ok_cnt = counters["ledgerOnly"] == ledger_only
+        detail += f"；manifest.ledgerOnly={counters['ledgerOnly']} vs 实际 {ledger_only}"
+        add(f"{tag}11 source 覆盖与计数", not no_src and ok_cnt, detail)
+    else:
+        add(f"{tag}11 source 覆盖", not no_src, detail)
 
     if cursor is not None:
         lines_ok = cursor.get("lines") == len(rows)
@@ -396,6 +409,7 @@ def check(export_dir: Path, baseline_dir: Path, shape_ref: Path | None = None,
                 expected={"steamId64": sid,
                           "hd2AccountId": str((man.get("identity") or {}).get("hd2AccountId") or "")},
                 cursor=man.get("settlementsCursor"),
+                counters=man.get("settlements"),
                 tag=f"J[{sid}]"))
 
         add(f"V04[{sid}] counts 自检", all(checks.values()),
