@@ -161,4 +161,26 @@ python tools/mock_request_summary.py --log-dir D:/mod/tmp/save-test-20261124/moc
 4. 引擎日志出现 `⚠ 身份切换：…A（已识别）→ …B；不合并`；
 5. `_orphan/` **不出现**（三趟都没打任务，本局无写入；出现了说明判据②的前提被破坏，要查日志）。
 
-判据工具：`python tools/save_state_snapshot.py snapshot|diff`（已含 9 条单测，全量 263 passed）。
+判据工具：
+- 一条命令出结论（推荐）：
+  `python tools/save_switch_verdict.py --state-dir <state> --before <before.json> --main 76561198968648344 --alt 76561199881579811`
+  → 逐项 S2-1…S2-6 + 结论行，退出码 0=PASS / 1=FAIL（可直接进 CI）。10 条单测。
+- 逐字段 diff（看细节）：`python tools/save_state_snapshot.py snapshot|diff`（9 条单测）。
+
+### 8.1 判定实现（工具已固化，2026-11-24 20:5x）
+
+| 项 | 依据 | 通过条件 |
+|---|---|---|
+| S2-1 | 主号账本 `identity.steam_id` | == 主号（**状态为准**，不看日志）|
+| S2-2 | 副号账本存在性 + `identity.steam_id` | 已创建且 == 副号 |
+| S2-3 | 主号 `earned` 字段级对比 before | exp / `inventory_rows` / `achievements_count` 三者不变；`identity` 除 `source` 外不许变 |
+| S2-4 | `logs/proxy.log` | 两条换号痕迹齐全（主→副、副→主）；接受 `身份切换：A（已识别）→ B` 与 `身份确认：A（local/未识别）已合并进 B` 两种文案 |
+| S2-5 | 日志「会话回滚」行 + `runtime/saves/_orphan/` | 都为 0/空（本局无写入）|
+| S2-6 | `_last.json` | `last_steam_id == 主号`（最后登录）|
+
+设计取舍（实测踩出来的）：
+- **主号账本 sha 变化不算失败**：引擎重写同内容或刷 `updated_at` 都会变；真正的混档证据是 S2-3 的字段级变化。
+- **S2-6 是弱判据**：测试开始前它天然为 PASS（最后登录本来就是主号），别把它当"换号成功"的证据。
+- **S2-4 依赖产品文案**：文案在 `src/hd2proxy/engine/active_save.py:760`（warn 通道）与 `saves.py:797`（log 通道），
+  两处措辞略有差异（`**不合并**` vs `不合并`），工具用 `身份切换：` / `身份确认：` 前缀匹配，改文案时需同步工具。
+- 产品只在「**旧档已识别**」时才打 `身份切换`；副号档首次为 `local/未识别` 时走「已合并」，两种都算过。
