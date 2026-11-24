@@ -178,15 +178,36 @@ B 的异常会被**错误归因**。这一条由工具强制，不靠人记。
 
 ## 2.9 ★ B 臂判读决策表（**预注册**：写在看到 B 数据之前，事后不得改）
 
-三臂已就位：
+四臂阶梯（每级只加一个变量；2026-11-25 实战后从三臂扩成四臂）：
 
 ```
-A  未改启动器       baseline-v8.json（15 条，三次复现 15/16/15）
-C  改启动器 4.1 s   control-launcher-patched.json（17 条；强 C：hook_fired=true，A vs C 全绿）
-B  改启动器+注入    待采
+A    未改启动器                    baseline-v8.json（15 条，三次复现 15/16/15）
+C    改启动器 IAT（钩子真执行）     control-launcher-patched.json（17 条；强 C：hook_fired=true，A vs C 全绿）
+B0   再 + 成功拿句柄（不注入）      待采（2026-11-25 第 1 次尝试只到 B0(deg)）
+B1   再 + 真注入                   待采
 ```
+
+**臂名降级护栏**（由 `eac_round_record.py` 强制，不靠人记）：
+
+| 报的臂 | 缺什么条件 | 自动降级为 |
+|---|---|---|
+| `C` | `hook_installed=false` | `A(deg)` |
+| `C` | `hook_fired=false` | `C(weak)` |
+| `B0` | `handle_obtained=false` | **`B0(deg)`（等价于 C）** |
+| `B1` | `inject_done=false` | **`B1(deg)`（等价于 B0）** |
 
 **主表 = C vs B**（测"注入本身"）；**副表 = A vs B**（测"启动器改动 + 注入"的合并效应）。
+
+### 2.9.0 每个阶梯的"附加变量"与混杂项
+
+| 臂 | 相对上一级新增的变量 | 已知混杂项（出现即必须写进 note）|
+|---|---|---|
+| `C` | 启动器 IAT 被改 4.1 s 且钩子被执行 | — |
+| `B0` | 接管 `CreateProcessW` 出参 + 复制游戏进程句柄 | `launcher_pi_struct_not_filled`（重定向出参导致启动器自己那份 PI 空 ⇒ 启动器行为可能改变）|
+| `B1` | 向游戏进程注入（读五模块校验和等）| — |
+
+> 2026-11-25 第 1 次 B0：拿到 PI 值但 `self_check.ok=false`（句柄可用性未证）+ `pi_writeback=false`
+> ⇒ 记 `B0(deg)`，**不能**用它声称"接管调用+拿句柄无信号"。
 
 ### 2.9.1 主表结果 → 允许写的结论
 

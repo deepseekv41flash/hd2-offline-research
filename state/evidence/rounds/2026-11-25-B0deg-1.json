@@ -1,0 +1,140 @@
+{
+ "schema": 1,
+ "arm": "B0(deg)",
+ "run_dir": "D:\\mod\\tmp\\eac-p7-b0-1",
+ "counts": {
+  "v8": 17,
+  "v6": 5,
+  "telemetry": 9
+ },
+ "v8": {
+  "req_len_series": [
+   388,
+   4904,
+   728,
+   13776,
+   4832,
+   8000,
+   33344,
+   23424,
+   4864,
+   6992,
+   4520,
+   7232,
+   2752,
+   944,
+   768,
+   784,
+   752
+  ],
+  "dt_ms_series": [
+   null,
+   5000,
+   4000,
+   6000,
+   5000,
+   5000,
+   35000,
+   21000,
+   7000,
+   6000,
+   3000,
+   5000,
+   6000,
+   24000,
+   46000,
+   13000,
+   62000
+  ],
+  "ua_set": [
+   "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)"
+  ]
+ },
+ "times": {
+  "launcher_seen": "02:16:09.357",
+  "launcher_gone": "02:16:14.395",
+  "game_appeared": "02:16:14.395",
+  "inject_at_ms": "4439.81",
+  "hook_installed": "true",
+  "hook_fired": "true",
+  "handle_obtained": "false",
+  "iat_alive_ms": "4528",
+  "game_appeared_from_sampler": "2026-11-25T02:16:14.395"
+ },
+ "re_fields": {},
+ "note": "B0(deg)：接管调用成功(hook_fired=true @4439.81ms)、PI 值拿到(pid=11836 hProcess=0x768 hThread=0x758 image=helldivers2.exe)，但 self_check.ok=false（NtQueryInformationProcess 取不到 pid）⇒ 句柄可用性未证。另 CONFLOUND: pi_writeback=false ⇒ 启动器自己那份 PI 未被填充，启动器行为可能与 C 轮不同（launcher_pi_struct_not_filled）。故本轮不能当干净 B0。",
+ "liveness": {
+  "summary": {
+   "samples": 330,
+   "t0": "2026-11-25T02:15:55.293",
+   "t1": "2026-11-25T02:21:27.475",
+   "game_windows": [
+    {
+     "pid": 11836,
+     "first": "2026-11-25T02:16:14.395",
+     "last": "2026-11-25T02:21:19.435",
+     "samples": 303
+    }
+   ],
+   "launcher_windows": [
+    {
+     "pid": 38140,
+     "first": "2026-11-25T02:16:09.357",
+     "last": "2026-11-25T02:16:14.395",
+     "samples": 6
+    }
+   ],
+   "game_samples": 303,
+   "eac_alive_samples": 303,
+   "eac_alive_ratio": 1.0,
+   "service_states": {
+    "running": 303
+   },
+   "conns_peak": 13,
+   "conns_peak_443": 9,
+   "remote_ip_top": [
+    [
+     "68.154.15.59",
+     273
+    ],
+    [
+     "127.0.0.1",
+     263
+    ],
+    [
+     "54.244.195.76",
+     108
+    ],
+    [
+     "2603:1061:14:143::1",
+     22
+    ],
+    [
+     "2600:9000:2491:8c00:19:8c54:3b40:93a1",
+     20
+    ]
+   ]
+  },
+  "verdict": {
+   "code": 0,
+   "label": "link-alive",
+   "detail": "EAC 存活 100%、连接峰值 13、v8 17 条 ⇒ 判读成立"
+  }
+ },
+ "derived": {
+  "launcher_first_seen": "2026-11-25T02:16:09.357",
+  "game_first_seen": "2026-11-25T02:16:14.395",
+  "note": "脏窗口=启动器出现→游戏出现；异常时刻不落在窗口内是正常的（上报延迟）",
+  "launcher_to_game_s": 5.038,
+  "iat_alive_ms_reported": 4528.0,
+  "iat_alive_ms_crosscheck": {
+   "reported_s": 4.528,
+   "sampler_s": 5.038,
+   "delta_s": 0.51,
+   "consistent": true
+  }
+ },
+ "warnings": [
+  "handle_obtained=False ⇒ 没拿到句柄，B0 退化成 C（记 B0(deg)）"
+ ]
+}

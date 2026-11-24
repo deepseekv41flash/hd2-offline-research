@@ -177,3 +177,41 @@ def test_c_weak_arm_accepted_directly():
     arm, warns = rr.resolve_arm("C(weak)", None, None)
     assert arm == "C(weak)"
     assert any("不得当作" in w for w in warns)
+
+
+# ---------------------------------------------------------------- 四臂阶梯：B0 / B1 的降级护栏
+def test_b0_requires_handle_obtained():
+    """B0 = 改启动器 + 拿句柄（不注入）。拿不到句柄 ⇒ 等价于 C，记 B0(deg)。"""
+    arm, warns = rr.resolve_arm("B0", True, True, False)
+    assert arm == "B0(deg)"
+    assert any("退化成 C" in w for w in warns)
+
+
+def test_b0_valid_with_handle():
+    arm, warns = rr.resolve_arm("B0", True, True, True)
+    assert arm == "B0" and warns == []
+
+
+def test_b1_requires_injection():
+    """B1 = 再注入。注入没发生 ⇒ 等价于 B0，记 B1(deg)。"""
+    arm, warns = rr.resolve_arm("B1", True, True, True, False)
+    assert arm == "B1(deg)"
+    assert any("退化成 B0" in w for w in warns)
+
+
+def test_b1_valid_with_injection():
+    arm, warns = rr.resolve_arm("B1", True, True, True, True)
+    assert arm == "B1" and warns == []
+
+
+def test_b1_without_inject_field_warns():
+    arm, warns = rr.resolve_arm("B1", True, True, True, None)
+    assert arm == "B1"
+    assert any("inject-done" in w for w in warns)
+
+
+def test_four_arm_ladder_is_ordered():
+    """四臂阶梯：A(未改) → C(改启动器) → B0(+拿句柄) → B1(+注入)，每级只加一个变量。"""
+    ladder = ["A", "C", "B0", "B1"]
+    for a in ladder:
+        assert a in rr.VALID_ARMS

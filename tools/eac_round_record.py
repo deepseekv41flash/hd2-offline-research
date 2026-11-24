@@ -12,6 +12,10 @@
 | `B` | 改启动器 IAT + 真注入 | 跟 `A` 和 `C` 比 |
 | `A(deg)` | 本想跑 `C`，但 **hook 没装上** ⇒ 退化成 `A` | 只能当 `A` 的补样，**不能当控制臂** |
 | `C(weak)` | 补丁装上了，但**钩子没命中**（槽打错/不在活路径）| 只能说明"一处未被执行的写"不扰动通道，**不能当"启动器被改"的对照** |
+| `B0` | 改启动器 + **拿句柄**、不注入 | 与 `C` 比 ⇒ 测"拿句柄"这一步本身 |
+| `B0(deg)` | 本想跑 `B0`，但**没拿到句柄**（`pi_ptr` 仍空）| 等价于 `C`，不能当 B0 |
+| `B1` | 改启动器 + 拿句柄 + **真注入** | 与 `B0` 比 ⇒ 测"注入本身" |
+| `B1(deg)` | 本想跑 `B1`，但**注入没发生** | 等价于 `B0`，不能当 B1 |
 | `void` | 轮次作废（游戏没起来/链路没通/被冻死等）| **不进任何臂**，只留痕 |
 
 三臂 + 两两对比 + RE 的毫秒级时刻，靠嘴记一定会乱。所以每轮采完跑这条命令，
@@ -38,7 +42,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 TOOLS = Path(__file__).resolve().parent
-VALID_ARMS = ("A", "C", "B", "A(deg)", "C(weak)", "void")
+VALID_ARMS = ("A", "C", "B", "B0", "B1", "A(deg)", "C(weak)", "B0(deg)", "B1(deg)", "void")
 
 
 def _import(name: str):
@@ -54,7 +58,9 @@ def _truthy(v: str | bool | None) -> bool:
 
 
 def resolve_arm(arm: str, hook_installed: bool | None,
-                hook_fired: bool | None = None) -> tuple[str, list[str]]:
+                hook_fired: bool | None = None,
+                handle_obtained: bool | None = None,
+                inject_done: bool | None = None) -> tuple[str, list[str]]:
     """把用户报的臂名规范化并做降级。纯函数。
 
     C 臂成立需要**两个**条件（2026-11-25 第 1 次实战补的）：
@@ -73,6 +79,15 @@ def resolve_arm(arm: str, hook_installed: bool | None,
     if arm == "C(weak)":
         warnings.append("C(weak) 臂：补丁未被命中，不得当作『启动器被改』的对照")
         return arm, warnings
+    # 四臂阶梯的降级护栏（2026-11-25：B0 = 改启动器+拿句柄、B1 = 再注入）
+    if arm == "B0" and handle_obtained is False:
+        warnings.append("handle_obtained=False ⇒ 没拿到句柄，B0 退化成 C（记 B0(deg)）")
+        return "B0(deg)", warnings
+    if arm == "B1" and inject_done is False:
+        warnings.append("inject_done=False ⇒ 注入没发生，B1 退化成 B0（记 B1(deg)）")
+        return "B1(deg)", warnings
+    if arm == "B1" and inject_done is None:
+        warnings.append("B1 未声明 --inject-done：无法确认注入真的发生，请补该字段")
     if arm == "C" and hook_installed is False:
         warnings.append("hook_installed=False ⇒ C 臂不成立，降级记为 A(deg)（不得当控制臂用）")
         return "A(deg)", warnings
@@ -184,6 +199,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--liveness", help="eac-watch.jsonl")
     ap.add_argument("--hook-installed", help="C 臂必填：True/False（回读自检结果）")
     ap.add_argument("--hook-fired", help="C 臂必填：True/False（钩子是否真被调用/拿到 PI）")
+    ap.add_argument("--handle-obtained", help="B0 臂必填：True/False（是否拿到 PROCESS_INFORMATION/句柄）")
+    ap.add_argument("--inject-done", help="B1 臂必填：True/False（是否真的执行了注入）")
     ap.add_argument("--launcher-seen")
     ap.add_argument("--launcher-gone")
     ap.add_argument("--game-appeared")
@@ -196,8 +213,10 @@ def main(argv: list[str] | None = None) -> int:
 
     hook = None if args.hook_installed is None else _truthy(args.hook_installed)
     fired = None if args.hook_fired is None else _truthy(args.hook_fired)
+    handle = None if args.handle_obtained is None else _truthy(args.handle_obtained)
+    injected = None if args.inject_done is None else _truthy(args.inject_done)
     try:
-        arm, warnings = resolve_arm(args.arm, hook, fired)
+        arm, warnings = resolve_arm(args.arm, hook, fired, handle, injected)
     except ValueError as exc:
         print(f"错误：{exc}")
         return 2
@@ -209,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
         "inject_at_ms": args.inject_at_ms,
         "hook_installed": args.hook_installed,
         "hook_fired": args.hook_fired,
+        "handle_obtained": args.handle_obtained,
+        "inject_done": args.inject_done,
         "iat_alive_ms": args.iat_alive_ms,
     }.items() if v}
     re_fields = {}
