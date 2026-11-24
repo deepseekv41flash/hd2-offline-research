@@ -1,0 +1,137 @@
+{
+ "schema": 1,
+ "arm": "C",
+ "run_dir": "D:\\mod\\tmp\\eac-p7-c-3",
+ "counts": {
+  "v8": 17,
+  "v6": 5,
+  "telemetry": 9
+ },
+ "v8": {
+  "req_len_series": [
+   388,
+   4904,
+   728,
+   9192,
+   7736,
+   9592,
+   33408,
+   23424,
+   4864,
+   6576,
+   4936,
+   9368,
+   896,
+   1104,
+   1024,
+   768,
+   920
+  ],
+  "dt_ms_series": [
+   null,
+   5000,
+   5000,
+   5000,
+   5000,
+   4000,
+   36000,
+   22000,
+   6000,
+   7000,
+   3000,
+   7000,
+   6000,
+   21000,
+   60000,
+   8000,
+   52000
+  ],
+  "ua_set": [
+   "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)"
+  ]
+ },
+ "times": {
+  "launcher_seen": "02:08:01.296",
+  "launcher_gone": "02:08:11.386",
+  "game_appeared": "02:08:04.337",
+  "inject_at_ms": "3337",
+  "hook_installed": "true",
+  "hook_fired": "true",
+  "iat_alive_ms": "4101.13",
+  "game_appeared_from_sampler": "2026-11-25T02:08:04.337"
+ },
+ "re_fields": {},
+ "note": "强 C 成立：hook 命中并执行（hook_fired=true @3337ms，slot 0x7ff6dc17c238 值见 RVA 0x3817fa → KERNEL32!CreateProcessW 0x7ff90abac830），iat_restored=true，iat_alive_ms=4101.13（实测，落在 4-10s）；pi_ptr=null 属 PI 读取时机问题、不影响臂名。A vs C 全绿 ⇒ 把启动器 IAT 改 4.1 s 不产生可观察信号。",
+ "liveness": {
+  "summary": {
+   "samples": 330,
+   "t0": "2026-11-25T02:07:48.238",
+   "t1": "2026-11-25T02:13:20.319",
+   "game_windows": [
+    {
+     "pid": 24400,
+     "first": "2026-11-25T02:08:04.337",
+     "last": "2026-11-25T02:13:20.319",
+     "samples": 314
+    }
+   ],
+   "launcher_windows": [
+    {
+     "pid": 25980,
+     "first": "2026-11-25T02:08:01.296",
+     "last": "2026-11-25T02:08:11.386",
+     "samples": 11
+    }
+   ],
+   "game_samples": 314,
+   "eac_alive_samples": 314,
+   "eac_alive_ratio": 1.0,
+   "service_states": {
+    "running": 314
+   },
+   "conns_peak": 13,
+   "conns_peak_443": 9,
+   "remote_ip_top": [
+    [
+     "68.154.14.134",
+     284
+    ],
+    [
+     "127.0.0.1",
+     265
+    ],
+    [
+     "44.245.124.232",
+     109
+    ],
+    [
+     "2603:1061:14:141::1",
+     21
+    ],
+    [
+     "2600:9000:2491:4600:19:8c54:3b40:93a1",
+     20
+    ]
+   ]
+  },
+  "verdict": {
+   "code": 0,
+   "label": "link-alive",
+   "detail": "EAC 存活 100%、连接峰值 13、v8 17 条 ⇒ 判读成立"
+  }
+ },
+ "derived": {
+  "launcher_first_seen": "2026-11-25T02:08:01.296",
+  "game_first_seen": "2026-11-25T02:08:04.337",
+  "note": "脏窗口=启动器出现→游戏出现；异常时刻不落在窗口内是正常的（上报延迟）",
+  "launcher_to_game_s": 3.041,
+  "iat_alive_ms_reported": 4101.13,
+  "iat_alive_ms_crosscheck": {
+   "reported_s": 4.101,
+   "sampler_s": 3.041,
+   "delta_s": 1.06,
+   "consistent": true
+  }
+ },
+ "warnings": []
+}
