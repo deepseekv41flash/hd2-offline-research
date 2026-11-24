@@ -18,7 +18,7 @@ UA = ("EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) "
 
 
 def test_resolve_arm_c_with_hook_ok():
-    arm, warns = rr.resolve_arm("C", True)
+    arm, warns = rr.resolve_arm("C", True, True)
     assert arm == "C" and warns == []
 
 
@@ -147,3 +147,33 @@ def test_derive_windows_without_launcher():
     d = rr.derive_windows({"game_windows": [{"pid": 1, "first": "01:43:27.000",
                                              "last": "y", "samples": 9}]}, {})
     assert "launcher_to_game_s" not in d
+
+
+# ---------------------------------------------------------------- C 臂成立需要"钩子真命中"
+def test_c_arm_requires_hook_installed():
+    arm, warns = rr.resolve_arm("C", False, True)
+    assert arm == "A(deg)"
+
+
+def test_c_arm_requires_hook_fired():
+    """装上了但没命中 ⇒ 补丁在没被执行的槽上，启动器行为不变 ⇒ 降级 C(weak)。"""
+    arm, warns = rr.resolve_arm("C", True, False)
+    assert arm == "C(weak)"
+    assert any("不能当" in w for w in warns)
+
+
+def test_c_arm_valid_only_when_installed_and_fired():
+    arm, warns = rr.resolve_arm("C", True, True)
+    assert arm == "C" and warns == []
+
+
+def test_c_arm_without_fired_field_warns():
+    arm, warns = rr.resolve_arm("C", True, None)
+    assert arm == "C"
+    assert any("hook-fired" in w for w in warns)
+
+
+def test_c_weak_arm_accepted_directly():
+    arm, warns = rr.resolve_arm("C(weak)", None, None)
+    assert arm == "C(weak)"
+    assert any("不得当作" in w for w in warns)

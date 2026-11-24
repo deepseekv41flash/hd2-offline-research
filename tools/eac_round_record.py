@@ -11,6 +11,7 @@
 | `C` | 改启动器 IAT、无注入 | 跟 `A` 比（看"改启动器"本身有没有信号）|
 | `B` | 改启动器 IAT + 真注入 | 跟 `A` 和 `C` 比 |
 | `A(deg)` | 本想跑 `C`，但 **hook 没装上** ⇒ 退化成 `A` | 只能当 `A` 的补样，**不能当控制臂** |
+| `C(weak)` | 补丁装上了，但**钩子没命中**（槽打错/不在活路径）| 只能说明"一处未被执行的写"不扰动通道，**不能当"启动器被改"的对照** |
 | `void` | 轮次作废（游戏没起来/链路没通/被冻死等）| **不进任何臂**，只留痕 |
 
 三臂 + 两两对比 + RE 的毫秒级时刻，靠嘴记一定会乱。所以每轮采完跑这条命令，
@@ -37,7 +38,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 TOOLS = Path(__file__).resolve().parent
-VALID_ARMS = ("A", "C", "B", "A(deg)", "void")
+VALID_ARMS = ("A", "C", "B", "A(deg)", "C(weak)", "void")
 
 
 def _import(name: str):
@@ -52,8 +53,16 @@ def _truthy(v: str | bool | None) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "y", "t")
 
 
-def resolve_arm(arm: str, hook_installed: bool | None) -> tuple[str, list[str]]:
-    """把用户报的臂名规范化，并在"钩子没装上"时降级成 A(deg)。纯函数。"""
+def resolve_arm(arm: str, hook_installed: bool | None,
+                hook_fired: bool | None = None) -> tuple[str, list[str]]:
+    """把用户报的臂名规范化并做降级。纯函数。
+
+    C 臂成立需要**两个**条件（2026-11-25 第 1 次实战补的）：
+      ① `hook_installed=True` —— 8 字节确实写进去了（回读自检）；
+      ② `hook_fired=True`     —— 那个槽**真被调用**（拿到 PROCESS_INFORMATION）。
+    只满足 ① 不满足 ② ⇒ 补丁写在一个没被执行的槽上，启动器实际行为不变
+    ⇒ 降级为 `C(weak)`：只能说明"一处未被执行的写不扰动通道"，**不能当控制臂**。
+    """
     warnings: list[str] = []
     arm = (arm or "").strip()
     if arm not in VALID_ARMS:
@@ -61,11 +70,20 @@ def resolve_arm(arm: str, hook_installed: bool | None) -> tuple[str, list[str]]:
     if arm == "void":
         warnings.append("void 轮次：不进任何臂，仅留痕")
         return "void", warnings
+    if arm == "C(weak)":
+        warnings.append("C(weak) 臂：补丁未被命中，不得当作『启动器被改』的对照")
+        return arm, warnings
     if arm == "C" and hook_installed is False:
         warnings.append("hook_installed=False ⇒ C 臂不成立，降级记为 A(deg)（不得当控制臂用）")
         return "A(deg)", warnings
+    if arm == "C" and hook_fired is False:
+        warnings.append("hook_fired=False ⇒ 补丁未被命中（槽打错/不在活路径），"
+                        "降级记为 C(weak)：不能当『启动器被改』的对照")
+        return "C(weak)", warnings
     if arm == "C" and hook_installed is None:
         warnings.append("C 臂未声明 --hook-installed，按 True 处理（请自行确认回读自检已通过）")
+    if arm == "C" and hook_fired is None:
+        warnings.append("C 臂未声明 --hook-fired：无法排除『装上了但没命中』，请补该字段")
     return arm, warnings
 
 
@@ -165,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--run", required=True, help="capture 目录")
     ap.add_argument("--liveness", help="eac-watch.jsonl")
     ap.add_argument("--hook-installed", help="C 臂必填：True/False（回读自检结果）")
+    ap.add_argument("--hook-fired", help="C 臂必填：True/False（钩子是否真被调用/拿到 PI）")
     ap.add_argument("--launcher-seen")
     ap.add_argument("--launcher-gone")
     ap.add_argument("--game-appeared")
@@ -176,8 +195,9 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     hook = None if args.hook_installed is None else _truthy(args.hook_installed)
+    fired = None if args.hook_fired is None else _truthy(args.hook_fired)
     try:
-        arm, warnings = resolve_arm(args.arm, hook)
+        arm, warnings = resolve_arm(args.arm, hook, fired)
     except ValueError as exc:
         print(f"错误：{exc}")
         return 2
@@ -187,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
         "launcher_gone": args.launcher_gone,
         "game_appeared": args.game_appeared,
         "inject_at_ms": args.inject_at_ms,
+        "hook_installed": args.hook_installed,
+        "hook_fired": args.hook_fired,
         "iat_alive_ms": args.iat_alive_ms,
     }.items() if v}
     re_fields = {}

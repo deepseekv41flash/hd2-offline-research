@@ -81,6 +81,32 @@ python tools/eac_watch_liveness.py --verdict D:/mod/tmp/eac-p5/eac-watch.jsonl \
 | **C** | 改启动器 IAT、**无注入** | 即 RE 冻结版验证轮 | `state/evidence/control-launcher-patched.json`（**永不并入锚**）|
 | **B** | 改启动器 IAT + 真注入 | 注入轮 | 只跟 A、C 比，不冻 |
 
+### 2.5.1 C 臂的成立条件（**三条缺一不可**，2026-11-25 第 1 次实战后补）
+
+```
+hook_installed = true   ← 8 字节确实写进去（回读自检）
+hook_fired     = true   ← 那个槽真被调用（拿到 PROCESS_INFORMATION / pi_ptr 非空）
+pi 自洽                 ← 拿到的 PI 指向真游戏进程
+```
+
+只满足第一条（装了但没命中）⇒ **`C(weak)`**：补丁写在**没被执行的槽**上，启动器行为不变，
+本轮"绿"只证明"一处未被执行的 8 字节写不扰动上报通道"，**不能当"启动器被改"的对照**。
+
+工具已强制：`eac_round_record.py --arm C` 时
+- `--hook-installed false` ⇒ 自动记 **`A(deg)`**
+- `--hook-fired false` ⇒ 自动记 **`C(weak)`**
+- 两个字段都不给 ⇒ 记录里留警告（无法排除"装了没命中"）
+
+### 2.5.2 `iat_alive_ms` 的定义（实测值，不许用定时器填充）
+
+```
+iat_alive_ms = 恢复时刻 − 安装时刻        （实测）
+未恢复 ⇒ null + restored=false            （禁止用 40001 这类哨兵值）
+```
+
+第 1 次实战就踩了：RE 报 `40001`，而启动器实测只存活 **10.1 s**（差 35.95 s），
+若采信会把 C 的脏窗口**系统性高估 4 倍**。工具会拿采样派生值 `launcher_to_game_s` 做交叉核对并标 `consistent=false`。
+
 **为什么必须有 C**：注入/补丁在进程出现后 +4~8 ms 就做完并恢复，而 EAC 上报通道 **+44 s** 才建立
 ⇒ B 出现异常时，单看网络**无法区分**"注入被感知"与"启动器被改被感知"。只有 C 能把这个差值单独测出来。
 **若最终没有 C**：B 相对 A 的变化必须写成**合并效应**，不得单独归因。
