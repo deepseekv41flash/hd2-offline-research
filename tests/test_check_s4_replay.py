@@ -116,17 +116,57 @@ def test_ip_fallback_fails_s4_2(tmp_path: Path):
     assert res["verdict"] == "FAIL" and "S4-2" in res["failed"]
 
 
-def test_prebind_only_is_skip(tmp_path: Path):
-    log = "\n".join([
+def test_prebind_only_passes_with_identity_info(tmp_path: Path):
+    """真实的正常流程：首屏 5 条玩家档读全是 `prebind`，GetMotd 晚 3 秒才到。
+
+    ⇒ 只有 prebind **不是**异常（2026-11-24 实机 + 产品线双方确认）；
+    S4-2 的硬判据是"所有玩家档请求靠身份头、无 ip/single/空"，身份升级只作 info。
+    """
+    log = chr(10).join([
         _line("21:00:00.100", "GET", "/api/Progression", len(PROG),
               source=f"player:{STEAM}", resolution="header:prebind", digest=_sha(PROG)),
         _line("21:00:05.200", "GET", "/api/Progression/inventory", len(INV),
               source=f"player:{STEAM}", resolution="header:prebind", digest=_sha(INV)),
         _line("21:00:05.300", "GET", "/api/Stats/profile/summary", len(STATS),
               source=f"player:{STEAM}", resolution="header:prebind", digest=_sha(STATS)),
-    ]) + "\n"
+    ]) + chr(10)
     res = s4.evaluate(log, "", _export(tmp_path), STEAM)
-    assert res["verdict"] == "SKIP" and "S4-2" in res["failed"] + ["S4-2"]
+    assert res["verdict"] == "PASS", res["checks"]
+    info = [c for c in res["checks"] if c["id"] == "info-identity"]
+    assert info and "未观察到身份升级证据" in info[0]["detail"]
+
+
+def test_health_upgrade_shows_in_identity_info(tmp_path: Path):
+    """提供 /health 时，身份升级为 getmotd 只体现在 info（首屏读档在升级之前属正常）。"""
+    log = chr(10).join([
+        _line("21:00:00.100", "GET", "/api/Progression", len(PROG),
+              source=f"player:{STEAM}", resolution="header:prebind", digest=_sha(PROG)),
+        _line("21:00:05.200", "GET", "/api/Progression/inventory", len(INV),
+              source=f"player:{STEAM}", resolution="header:prebind", digest=_sha(INV)),
+        _line("21:00:05.300", "GET", "/api/Stats/profile/summary", len(STATS),
+              source=f"player:{STEAM}", resolution="header:prebind", digest=_sha(STATS)),
+    ]) + chr(10)
+    health = {"players": {"last_header_source": "getmotd", "last_source": "header:getmotd",
+                          "learned_ips": 1}}
+    res = s4.evaluate(log, "", _export(tmp_path), STEAM, health=health)
+    assert res["verdict"] == "PASS"
+    info = [c for c in res["checks"] if c["id"] == "info-identity"][0]
+    assert "getmotd" in info["detail"] and "正常时序" in info["detail"]
+
+
+def test_single_and_empty_resolution_fail_s4_2(tmp_path: Path):
+    """`single`（索引里只有一个玩家蒙的）/空（回落 baseline）也算身份路径失败。"""
+    log = chr(10).join([
+        _line("21:00:00.100", "GET", "/api/Progression", len(PROG),
+              source=f"player:{STEAM}", resolution="single", digest=_sha(PROG)),
+        _line("21:00:05.200", "GET", "/api/Progression/inventory", len(INV),
+              source=f"player:{STEAM}", resolution="header:prebind", digest=_sha(INV)),
+        _line("21:00:05.300", "GET", "/api/Stats/profile/summary", len(STATS),
+              source=f"player:{STEAM}", resolution="header:prebind", digest=_sha(STATS)),
+    ]) + chr(10)
+    res = s4.evaluate(log, "", _export(tmp_path), STEAM)
+    assert res["verdict"] == "FAIL" and "S4-2" in res["failed"]
+    assert "single" in next(c for c in res["checks"] if c["id"] == "S4-2")["detail"]
 
 
 def test_missing_endpoint_fails(tmp_path: Path):
