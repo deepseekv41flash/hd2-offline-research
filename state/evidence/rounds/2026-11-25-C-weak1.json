@@ -1,0 +1,136 @@
+{
+ "schema": 1,
+ "arm": "C(weak)",
+ "run_dir": "D:\\mod\\tmp\\eac-p7-c-1",
+ "counts": {
+  "v8": 16,
+  "v6": 5,
+  "telemetry": 9
+ },
+ "v8": {
+  "req_len_series": [
+   388,
+   4904,
+   728,
+   8576,
+   10056,
+   8000,
+   33280,
+   23424,
+   4864,
+   6576,
+   4936,
+   7360,
+   2856,
+   768,
+   984,
+   1144
+  ],
+  "dt_ms_series": [
+   null,
+   5000,
+   6000,
+   4000,
+   5000,
+   5000,
+   35000,
+   22000,
+   7000,
+   4000,
+   5000,
+   5000,
+   5000,
+   7000,
+   17000,
+   62000
+  ],
+  "ua_set": [
+   "EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)"
+  ]
+ },
+ "times": {
+  "launcher_seen": "01:51:26.684",
+  "launcher_gone": "01:51:36.779",
+  "game_appeared": "01:51:30.735",
+  "hook_installed": "true",
+  "hook_fired": "false",
+  "iat_alive_ms": "40001",
+  "game_appeared_from_sampler": "2026-11-25T01:51:30.735"
+ },
+ "re_fields": {},
+ "note": "hook 未命中(pi_ptr=null)：补丁打在错误槽且从未被执行；iat_alive_ms=40001 与观测不符（启动器实际仅存活 10.1s，工具标 consistent=false）。A vs C 全绿只证明'一处未执行的 8 字节写'不扰动上报通道。",
+ "liveness": {
+  "summary": {
+   "samples": 330,
+   "t0": "2026-11-25T01:51:18.651",
+   "t1": "2026-11-25T01:56:50.788",
+   "game_windows": [
+    {
+     "pid": 15704,
+     "first": "2026-11-25T01:51:30.735",
+     "last": "2026-11-25T01:56:50.788",
+     "samples": 318
+    }
+   ],
+   "launcher_windows": [
+    {
+     "pid": 38924,
+     "first": "2026-11-25T01:51:26.684",
+     "last": "2026-11-25T01:51:36.779",
+     "samples": 11
+    }
+   ],
+   "game_samples": 318,
+   "eac_alive_samples": 318,
+   "eac_alive_ratio": 1.0,
+   "service_states": {
+    "running": 318
+   },
+   "conns_peak": 13,
+   "conns_peak_443": 9,
+   "remote_ip_top": [
+    [
+     "68.154.14.134",
+     288
+    ],
+    [
+     "127.0.0.1",
+     269
+    ],
+    [
+     "44.245.124.232",
+     108
+    ],
+    [
+     "2603:1061:14:186::1",
+     23
+    ],
+    [
+     "2600:9000:2491:be00:19:8c54:3b40:93a1",
+     22
+    ]
+   ]
+  },
+  "verdict": {
+   "code": 0,
+   "label": "link-alive",
+   "detail": "EAC 存活 100%、连接峰值 13、v8 16 条 ⇒ 判读成立"
+  }
+ },
+ "derived": {
+  "launcher_first_seen": "2026-11-25T01:51:26.684",
+  "game_first_seen": "2026-11-25T01:51:30.735",
+  "note": "脏窗口=启动器出现→游戏出现；异常时刻不落在窗口内是正常的（上报延迟）",
+  "launcher_to_game_s": 4.051,
+  "iat_alive_ms_reported": 40001.0,
+  "iat_alive_ms_crosscheck": {
+   "reported_s": 40.001,
+   "sampler_s": 4.051,
+   "delta_s": 35.95,
+   "consistent": false
+  }
+ },
+ "warnings": [
+  "hook_fired=False ⇒ 补丁未被命中（槽打错/不在活路径），降级记为 C(weak)：不能当『启动器被改』的对照"
+ ]
+}

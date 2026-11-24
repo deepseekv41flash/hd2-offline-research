@@ -1,0 +1,43 @@
+{
+ "schema": 1,
+ "arm": "void",
+ "run_dir": "D:\\mod\\tmp\\eac-p6-c",
+ "counts": {
+  "v8": 0,
+  "v6": 0,
+  "telemetry": 0
+ },
+ "v8": {
+  "req_len_series": [],
+  "dt_ms_series": [],
+  "ua_set": []
+ },
+ "times": {
+  "game_appeared_from_sampler": null
+ },
+ "re_fields": {},
+ "note": "round voided: launcher frozen by RE runner, game never spawned (launcher pid 27984 alive 01:43:23->01:45:37 with ThreadCount=1/2.5MB per EAC-off line; my 1s sampler saw launcher present at 01:45:34-37, EAC process absent, game absent). v8=0 只因游戏没起来 => 无结论(3), 不是红。",
+ "liveness": {
+  "summary": {
+   "samples": 12,
+   "t0": "2026-11-25T01:45:34.360",
+   "t1": "2026-11-25T01:45:45.407",
+   "game_windows": [],
+   "game_samples": 0,
+   "eac_alive_samples": 0,
+   "eac_alive_ratio": 0.0,
+   "service_states": {},
+   "conns_peak": 0,
+   "conns_peak_443": 0,
+   "remote_ip_top": []
+  },
+  "verdict": {
+   "code": 3,
+   "label": "no-game-window",
+   "detail": "采样窗口内没看到 helldivers2.exe，本轮无法判读（原点缺失）"
+  }
+ },
+ "warnings": [
+  "void 轮次：不进任何臂，仅留痕"
+ ]
+}
