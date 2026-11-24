@@ -94,3 +94,34 @@ def test_ts_to_ms_parses_both_formats():
     assert eac._ts_to_ms("10:00:01.500") == 36001500
     assert eac._ts_to_ms(None) == 0
     assert eac._ts_to_ms("garbage") == 0
+
+
+def test_telemetry_index_extracts_app_id_and_session(tmp_path: Path):
+    """`/telemetry/...&AppID=EOSSDK.AntiCheatExt.Launcher` 是启动器上报（与 /anticheat/ 不同路径）。"""
+    p = tmp_path / "mitm.jsonl"
+    p.write_text(json.dumps({
+        "t": "2026-11-25T00:36:43", "host": AC, "method": "POST",
+        "path": "/telemetry/data/datarouter/api/v1/public/data?AppVersion=1.0.0"
+                "&UploadType=sdkevents&AppID=EOSSDK.AntiCheatExt.Launcher&SessionId=fa38ae34",
+        "req_len": 0, "status": 200, "resp_len": 666,
+        "raw": [{"direction": "req", "file": "t1.bin", "sha256": "abc", "truncated": False}],
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
+    rows = eac.build_telemetry_index(p)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["app_id"] == "EOSSDK.AntiCheatExt.Launcher"
+    assert r["upload_type"] == "sdkevents"
+    assert r["session_id"] == "fa38ae34"
+    assert r["resp_len"] == 666 and r["file"] == "t1.bin"
+
+
+def test_anticheat_index_ignores_telemetry(tmp_path: Path):
+    """两条路径必须分开统计：telemetry 不能污染 req_len_series（否则指纹不可比）。"""
+    p = _lines(tmp_path, [
+        _ac_req("10:00:00.000", 100),
+        {"t": "10:00:01.000", "host": AC, "method": "POST",
+         "path": "/telemetry/data/datarouter/api/v1/public/data?AppID=X",
+         "req_len": 0, "status": 200, "resp_len": 666},
+    ])
+    assert len(eac.build_index(p)) == 2          # req + resp 两条（只来自 anticheat）
+    assert len(eac.build_telemetry_index(p)) == 1

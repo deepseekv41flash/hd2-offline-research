@@ -49,6 +49,7 @@ HOSTS_PATH = Path(r"C:\Windows\System32\drivers\etc\hosts")
 
 ANTICHEAT_HOST = "api.epicgames.dev"
 ANTICHEAT_PATH_RE = r"^/(anticheat/v[0-9]+/|anticheat)"
+DUMP_PATHS_RE = r"/anticheat/|/telemetry/"   # 落原值的路径（telemetry 用来取 Bootstrapper 事件）
 MODULES_HOST = "modules-cdn.eac-prod.on.epicgames.com"
 GAME_API_HOST = "api.live.prod.thehelldiversgame.com"
 DEFAULT_REDIRECT = [ANTICHEAT_HOST]
@@ -133,6 +134,61 @@ def summarize(rows: list[dict], *, started: str, ended: str,
         "raw_files": sum(1 for r in rows if r["file"]),
         "truncated_files": sum(1 for r in rows if r["truncated"]),
     }
+
+
+def build_telemetry_index(jsonl_path: Path) -> list[dict]:
+    """把 `/telemetry/...` 的请求抽出来，并从 query 解析 AppID/UploadType/SessionId。
+
+    为什么值得单独抽：`AppID=EOSSDK.AntiCheatExt.Launcher` 是 **EAC 启动器（Bootstrapper）**
+    自己的遥测通道，与游戏内 `/anticheat/v8` 检测流是**两条不同的上报路径**（2026-11-25 实测）。
+    AppID 是 datarouter 天然的分类标志，将来做 A/B 或注入前后对比时按它分组。
+    """
+    rows: list[dict] = []
+    p = Path(jsonl_path)
+    if not p.exists():
+        return rows
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            rec = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        path = str(rec.get("path") or "")
+        if "/telemetry/" not in path:
+            continue
+        query = path.split("?", 1)[1] if "?" in path else ""
+        params = dict(part.split("=", 1) for part in query.split("&") if "=" in part)
+        raw = {d.get("direction"): d for d in (rec.get("raw") or [])}
+        item = raw.get("req") or {}
+        rows.append({
+            "ts": rec.get("t"), "host": rec.get("host"),
+            "method": rec.get("method"), "path": path.split("?", 1)[0],
+            "app_id": params.get("AppID"), "upload_type": params.get("UploadType"),
+            "session_id": params.get("SessionId"),
+            "req_len": int(rec.get("req_len") or 0),
+            "status": rec.get("status"),
+            "resp_len": int(rec.get("resp_len") or 0),
+            "file": item.get("file") or "", "sha256": item.get("sha256") or "",
+        })
+    return rows
+
+
+
+def _telemetry_events(out_dir: Path, item: dict) -> list[dict]:
+    """从已落盘的 telemetry 请求体里抽事件名（EAC 启动器上报是**明文 JSON**）。
+
+    2026-11-25 实测：`AppID=EOSSDK.AntiCheatExt.Launcher` 的 body 是
+    `{"Events":[{"EventName":"AntiCheat.Info.BootstrapperResult",...}]}` 纯 JSON，
+    含 `LaunchResult` 与各类耗时字段 —— 这是"启动器报了什么"的现成判据。
+    """
+    fname = item.get("file") or ""
+    if not fname:
+        return []
+    try:
+        doc = json.loads((Path(out_dir) / "raw" / fname).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    evs = doc.get("Events") if isinstance(doc, dict) else None
+    return [e for e in evs if isinstance(e, dict)] if isinstance(evs, list) else []
 
 
 def count_hosts(jsonl_path: Path) -> dict:
@@ -285,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
                "--intercept", ",".join(redirect), "--cert-dir", str(cert_dir),
                "--no-chain", "--log", str(jsonl),
                "--dump-bodies", str(dump_dir), "--dump-hosts", primary,
-               "--dump-paths", "/anticheat/", "--dump-limit", str(args.dump_limit)]
+               "--dump-paths", DUMP_PATHS_RE, "--dump-limit", str(args.dump_limit)]
         print("[2/5] 起 MITM 透明终结：127.0.0.1:%d → 真实上游 %s"
               % (args.listen_port, real_ips[primary]))
         procs.append(subprocess.Popen(cmd))
@@ -331,15 +387,25 @@ def main(argv: list[str] | None = None) -> int:
             print("[*] JA3/SNI 提取 %d 条 → ja3-sni.tsv" % n)
         ended = time.strftime("%Y-%m-%dT%H:%M:%S")
         rows = build_index(jsonl)
+        tele = build_telemetry_index(jsonl)          # EAC 启动器（Bootstrapper）遥测
         meta = summarize(rows, started=started, ended=ended)
         meta.update({
             "redirect_hosts": redirect, "real_ips": real_ips,
             "hosts_restore": diff,
             "system_proxy_untouched": True,
-            "ca_note": "研究 CA 仍装在 CurrentUser\\Root，未卸载",
+            "ca_note": "研究 CA 仍在 CurrentUser\\Root；机器根那份由 run.cmd 回收",
             "hosts": count_hosts(jsonl),
             "game_api_requests": count_hosts(jsonl).get(GAME_API_HOST, {}).get("requests", 0),
             "modules_cdn_seen": MODULES_HOST in count_hosts(jsonl),
+            "telemetry": {
+                "requests": len(tele),
+                "app_ids": sorted({t["app_id"] for t in tele if t["app_id"]}),
+                "upload_types": sorted({t["upload_type"] for t in tele if t["upload_type"]}),
+                "event_names": sorted({e.get("EventName") for t in tele
+                                       for e in _telemetry_events(out, t)}),
+                "raw_files": sum(1 for t in tele if t["file"]),
+                "items": tele[:50],
+            },
         })
         (out / "index.jsonl").write_text(
             "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + ("\n" if rows else ""),

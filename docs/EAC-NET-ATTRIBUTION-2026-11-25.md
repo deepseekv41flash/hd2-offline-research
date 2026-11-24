@@ -91,3 +91,60 @@ T6a 用**本仓 CA 对 13 个域名（含 EOS/EAC）做 TLS 终止**，游戏**�
   迫使 EOS 回落系统解析 ⇒ hosts 生效；**收尾必删规则**并把 `netsh advfirewall show rule` 前后快照写进 meta。
 - 备选：IP 级透明重定向（WinDivert），Secure Boot 下需 WHQL 签名，风险高，暂不做。
 - 注意：这条负结论能省别人一天——**别再只指望 hosts 抓游戏侧 EOS**。
+
+## 7. 第 2 轮（00:44–00:48）：机器根 CA + 掐 DoH 仍无效；但拿到 Bootstrapper 明文体
+
+**本轮变量**（相对 §6 只改两处）：
+1. 研究 CA **加装到 `LocalMachine\Root`**（§6 时只有 CurrentUser）—— 假设"只读机器根的客户端拒了我们的叶证书"；
+2. **掐公共 DNS/DoH**：`netsh advfirewall` 阻断到 `1.1.1.1/1.0.0.1/8.8.8.8/8.8.4.4` 的全部出站
+   （规则名 `hd2-eac-baseline-tmp-*`，跑完即删）。
+
+### 7.1 结果：游戏侧行为**完全没变**
+
+| 观测 | 第 1 轮 | **第 2 轮** |
+|---|---|---|
+| `/anticheat/v8|v6` 请求 | 0 | **0** |
+| 到 `127.0.0.1:443` 的 Reset | 4 | **4** |
+| 成功命中的请求 | 1（Bootstrapper 遥测）| **1（同一条）** |
+| 游戏进程到 `127.0.0.1:443` 的连接 | 0 | **0**（EAC-off 线 probe 独立确认）|
+
+⇒ **机器根 CA 与掐 DoH 都不是原因**。游戏拿的是**另一套地址**（`172.200.240.121` / `108.138.26.39` /
+`184.194.175.202` 等，每次启动可能不同），既不是 hosts 解析值也不是上一次的 IP。
+
+### 7.2 ★ 收获：EAC 启动器的上报体是**明文 JSON**
+
+`--dump-paths` 扩到 `/telemetry/` 后，落下了那条请求的 **1095 B 原文**（`raw/…_req.bin`）：
+
+```json
+{"Events":[
+ {"EventName":"AntiCheat.Info.BootstrapperResult",
+  "Source":"Bootstrapper/1.9.4","BuildTime":"Mar 25 2026 05:12:33",
+  "ProductId":"f163733398a54335966be5046900198b",
+  "SandboxId":"222a4933c4e2417d8d5da019a4e41c9e",
+  "DeploymentId":"8511004301af474cad0c5a65679fe02e",
+  "OSName":"Windows","OSVer":"10.0 x86-64 (Build 26320)",
+  "LaunchResult":301},
+ {"EventName":"AntiCheat.Info.BootstrapperInitPerf", …},
+ {"EventName":"AntiCheat.Info.BootstrapperGameWindowVisibilityCheckDuration", …}]}
+```
+
+要点：
+- **明文 JSON，无加密**；字段全集 `EventName/Source/BuildTime/ProductId/SandboxId/DeploymentId/OSName/OSVer/LaunchResult/DownloadDurationMs/InitDurationMs/TotalDurationMs/WaitDurationMs`；
+- **只报启动阶段**（init/perf/窗口可见性检查/**启动结果码**），**不含任何检测结果或完整性判定**；
+- `ProductId` / `DeploymentId` 与静态 strings 挖到的 CDN 路径**完全一致**（交叉验证）；
+- **`LaunchResult: 301`** 是现成的"启动结果码"，可作注入前后 A/B 的第一观察点。
+
+### 7.3 ★ 方法更正：T6a 的 `/anticheat/v8` 是**经系统代理**抓到的，不是 hosts
+
+`docs/T6-MITM-SIDECHANNEL-2026-11-21.md` §1 记录的方法是：
+> 临时把 HKCU IE 代理（WinHTTP/WinINet 会读）指到 `127.0.0.1:18092`，**并给游戏进程设 `HTTP(S)_PROXY`**（libcurl 系 SDK 读）；跑完立即恢复。
+
+⇒ 第 1、2 轮的"hosts 重定向"是**弯路**：EOS/EAC 不是"不吃代理"，而是"本轮没给代理"。
+若要做第 3 轮，正解是**恢复 T6a 那套**（CONNECT 代理 + env），而不是上 WinDivert。
+（间接证据：游戏侧组件到 `127.0.0.1:7897` 有 317 次连接 —— 系统代理对游戏内组件是生效的。）
+
+### 7.4 第 3 轮建议顺序（修正后）
+
+1. **首选**：CONNECT 代理 + `HKCU` IE 代理 + 给游戏进程 `HTTP(S)_PROXY`（`setx` + 重启 Steam 让子进程继承）；
+2. 备选：WinDivert 按 IP 透明重定向（Secure Boot 下需 WHQL 签名，成本高）；
+3. 兜底：只采启动器通道（已证可用）。
