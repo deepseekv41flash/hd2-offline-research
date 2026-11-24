@@ -262,3 +262,92 @@ def test_old_export_without_baseline_files_still_passes(tmp_path: Path):
     exp = _write_export(tmp_path / "exp", progression=prog, inventory=inv, stats=stats, manifest=man)
     report = vse.check(exp, base)
     assert report["verdict"] == "PASS"
+
+
+# ---- settlements.jsonl 事件流（2026-11-24 新增） ---------------------------
+
+def _jline(**kw) -> str:
+    base = {"schema": 1, "event": "settlement", "ts": "2026-11-24T13:39:43+08:00",
+            "saveId": "steam_76561198968648344", "steamId64": "76561198968648344",
+            "hd2AccountId": "11893343864225233967", "missionId": "m-1", "operationId": 1,
+            "missionIndex": 2, "experience": 936, "items": {"897894480": 7},
+            "packages": {"277818845": {"level": 5, "progress": 459,
+                                       "platformAccountId": "11893343864225233967"}},
+            "itemSource": "rewards", "catalogBuild": "93e7575a/3021/1007203"}
+    base.update(kw)
+    return json.dumps(base, ensure_ascii=False)
+
+
+def _write_jsonl(tmp_path, lines: list[str]) -> Path:
+    p = tmp_path / "settlements.jsonl"
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+
+EXPECTED = {"steamId64": "76561198968648344", "hd2AccountId": "11893343864225233967"}
+
+
+def test_settlements_valid_file_passes(tmp_path: Path):
+    p = _write_jsonl(tmp_path, [_jline(missionId="m-1"), _jline(missionId="m-2", packages={})])
+    crit = vse.check_settlements(p, expected=EXPECTED)
+    assert all(c["status"] == "PASS" for c in crit), [c for c in crit if c["status"] == "FAIL"]
+
+
+def test_settlements_bad_json_line_fails(tmp_path: Path):
+    p = _write_jsonl(tmp_path, [_jline(missionId="m-1"), "{not-json"])
+    crit = vse.check_settlements(p, expected=EXPECTED)
+    assert any(c["id"].startswith("J01") and c["status"] == "FAIL" for c in crit)
+
+
+def test_settlements_missing_required_field_fails(tmp_path: Path):
+    line = json.loads(_jline(missionId="m-1"))
+    line.pop("catalogBuild")
+    p = _write_jsonl(tmp_path, [json.dumps(line, ensure_ascii=False)])
+    crit = vse.check_settlements(p, expected=EXPECTED)
+    assert any(c["id"].startswith("J02") and c["status"] == "FAIL" for c in crit)
+
+
+def test_settlements_duplicate_mission_id_fails(tmp_path: Path):
+    p = _write_jsonl(tmp_path, [_jline(missionId="m-1"), _jline(missionId="m-1")])
+    crit = vse.check_settlements(p, expected=EXPECTED)
+    assert any(c["id"].startswith("J05") and c["status"] == "FAIL" for c in crit)
+
+
+def test_settlements_packages_shape_and_identity_fails(tmp_path: Path):
+    bad_level = json.loads(_jline(missionId="m-1"))
+    bad_level["packages"] = {"277818845": {"level": "5", "progress": 459}}
+    p = _write_jsonl(tmp_path, [json.dumps(bad_level, ensure_ascii=False)])
+    assert any(c["id"].startswith("J07") and c["status"] == "FAIL"
+               for c in vse.check_settlements(p, expected=EXPECTED))
+
+    wrong_pa = json.loads(_jline(missionId="m-2"))
+    wrong_pa["packages"] = {"277818845": {"level": 5, "progress": 459,
+                                          "platformAccountId": "99999999999999999999"}}
+    p2 = _write_jsonl(tmp_path, [json.dumps(wrong_pa, ensure_ascii=False)])
+    assert any(c["id"].startswith("J07") and c["status"] == "FAIL"
+               for c in vse.check_settlements(p2, expected=EXPECTED))
+
+
+def test_settlements_ts_without_timezone_fails(tmp_path: Path):
+    p = _write_jsonl(tmp_path, [_jline(missionId="m-1", ts="2026-11-24T13:39:43")])
+    crit = vse.check_settlements(p, expected=EXPECTED)
+    assert any(c["id"].startswith("J08") and c["status"] == "FAIL" for c in crit)
+
+
+def test_settlements_source_enums_and_cursor(tmp_path: Path):
+    lines = [_jline(missionId="m-1", itemSource="mission_end"),     # 非法 itemSource
+             _jline(missionId="m-2", source="unknown-src")]         # 非法 source
+    p = _write_jsonl(tmp_path, lines)
+    crit = vse.check_settlements(p, expected=EXPECTED, cursor={"lines": 1, "lastMissionId": "m-1"})
+    ids = {c["id"].split(" ")[0]: c["status"] for c in crit}
+    assert ids["J09"] == "FAIL"
+    assert ids["J10"] == "FAIL"          # 游标行数/末条都对不上
+
+
+def test_cli_settlements_file_only(tmp_path: Path, capsys):
+    p = _write_jsonl(tmp_path, [_jline(missionId="m-1")])
+    rc = vse.main(["--settlements-file", str(p), "--steam-id64", EXPECTED["steamId64"],
+                   "--hd2-account-id", EXPECTED["hd2AccountId"], "--json"])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["verdict"] == "PASS" and data["passed"] >= 9

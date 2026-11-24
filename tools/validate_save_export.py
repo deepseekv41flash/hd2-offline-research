@@ -106,6 +106,103 @@ def key_order(obj) -> list[str]:
     return list(obj.keys()) if isinstance(obj, dict) else []
 
 
+SETTLEMENT_REQUIRED = ("schema", "event", "ts", "saveId", "steamId64", "hd2AccountId",
+                       "missionId", "experience", "items", "packages", "catalogBuild")
+ITEM_SOURCES = {"rewards", "badges", "both", "none"}
+EVENT_SOURCES = {"mission_end", "ledger-only"}
+ISO_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}:\d{2}|Z)$")
+
+
+def check_settlements(path: Path, *, expected: dict | None = None,
+                      cursor: dict | None = None, tag: str = "J") -> list[dict]:
+    """校验 `settlements.jsonl`（每玩家一行一局）。返回判据列表（PASS/FAIL）。"""
+    results: list[dict] = []
+
+    def add(cid: str, ok: bool, detail: str) -> None:
+        results.append({"id": cid, "status": "PASS" if ok else "FAIL", "detail": detail})
+
+    rows, bad_lines = [], []
+    for i, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            doc = json.loads(line)
+        except Exception:  # noqa: BLE001
+            bad_lines.append(i)
+            continue
+        if not isinstance(doc, dict):
+            bad_lines.append(i)
+            continue
+        rows.append(doc)
+    add(f"{tag}01 每行合法 JSON 对象", not bad_lines,
+        f"{len(rows)} 行有效；坏行={bad_lines[:5]}" if bad_lines or not rows else f"{len(rows)} 行全部可解析")
+
+    missing = [k for r in rows for k in SETTLEMENT_REQUIRED if k not in r]
+    add(f"{tag}02 必填字段", not missing, f"缺 {sorted(set(missing))[:8]}" if missing else "11 个必填字段齐全")
+
+    bad_ver = [r.get("missionId") for r in rows if r.get("schema") != 1 or r.get("event") != "settlement"]
+    add(f"{tag}03 schema/event", not bad_ver,
+        f"异常行={bad_ver[:3]}" if bad_ver else "schema=1、event=settlement")
+
+    if expected:
+        bad_id = [r.get("missionId") for r in rows
+                  if str(r.get("steamId64")) != expected["steamId64"]
+                  or str(r.get("hd2AccountId")) != expected["hd2AccountId"]
+                  or str(r.get("saveId")) != f"steam_{expected['steamId64']}"]
+        add(f"{tag}04 身份一致", not bad_id,
+            f"与 manifest 不一致的行={bad_id[:3]}" if bad_id else "saveId/steamId64/hd2AccountId 与 manifest 一致")
+
+    mids = [str(r.get("missionId") or "") for r in rows]
+    dup = sorted({m for m in mids if mids.count(m) > 1})
+    add(f"{tag}05 missionId 去重", all(mids) and not dup,
+        f"空={mids.count('')}、重复={dup[:3]}" if (not all(mids) or dup) else f"{len(mids)} 条 missionId 唯一")
+
+    bad_items = [r.get("missionId") for r in rows
+                 if not isinstance(r.get("items"), dict)
+                 or any(not isinstance(k, str) or not isinstance(v, int) for k, v in (r.get("items") or {}).items())
+                 or not isinstance(r.get("experience"), (int, float))]
+    add(f"{tag}06 数值形状", not bad_items,
+        f"异常行={bad_items[:3]}" if bad_items else "experience 数值、items 为 {mixId(str): amount(int)}")
+
+    def pkg_bad(r: dict) -> str:
+        pkgs = r.get("packages")
+        if not isinstance(pkgs, dict):
+            return "packages 不是对象"
+        for k, v in pkgs.items():
+            if not isinstance(k, str) or not isinstance(v, dict):
+                return f"{k}: 元素不是对象"
+            if not isinstance(v.get("level"), int) or not isinstance(v.get("progress"), int):
+                return f"{k}: level/progress 非整数"
+            pa = v.get("platformAccountId")
+            if pa is not None and expected and str(pa) not in (expected["hd2AccountId"], expected["steamId64"]):
+                return f"{k}: platformAccountId={pa} 与玩家身份不符"
+        return ""
+
+    bad_pkg = [(r.get("missionId"), pkg_bad(r)) for r in rows if pkg_bad(r)]
+    add(f"{tag}07 packages 形状", not bad_pkg,
+        f"{bad_pkg[:2]}" if bad_pkg else "packages 为 {id32:{level,progress[,platformAccountId]}} 且身份一致")
+
+    bad_ts = [r.get("missionId") for r in rows if not ISO_TS_RE.match(str(r.get("ts") or ""))]
+    add(f"{tag}08 ts 带时区", not bad_ts,
+        f"异常行={bad_ts[:3]}" if bad_ts else "ISO 8601 + 显式时区")
+
+    bad_src = [r.get("missionId") for r in rows
+               if "itemSource" in r and str(r.get("itemSource")) not in ITEM_SOURCES]
+    bad_evsrc = [r.get("missionId") for r in rows
+                 if "source" in r and str(r.get("source")) not in EVENT_SOURCES]
+    add(f"{tag}09 来源枚举", not bad_src and not bad_evsrc,
+        f"itemSource 异常={bad_src[:3]}、source 异常={bad_evsrc[:3]}" if (bad_src or bad_evsrc)
+        else f"itemSource ∈ {sorted(ITEM_SOURCES)}；source ∈ {sorted(EVENT_SOURCES)}")
+
+    if cursor is not None:
+        lines_ok = cursor.get("lines") == len(rows)
+        last_ok = (not rows) or str(cursor.get("lastMissionId")) == mids[-1]
+        add(f"{tag}10 manifest 游标", lines_ok and last_ok,
+            f"cursor.lines={cursor.get('lines')} vs 实际 {len(rows)}、"
+            f"cursor.lastMissionId={cursor.get('lastMissionId')} vs 末行 {mids[-1] if mids else '-'}")
+    return results
+
+
 def check(export_dir: Path, baseline_dir: Path, shape_ref: Path | None = None,
           mission_end_template: Path | None = None) -> dict:
     results: list[dict] = []
@@ -291,6 +388,16 @@ def check(export_dir: Path, baseline_dir: Path, shape_ref: Path | None = None,
             add(f"F09[{sid}] stats_profile_war 键集", set(war) == set(base_s),
                 f"导出 {len(war)} 键 vs 基线 stats {len(base_s)} 键")
 
+        # 结算事件流（可选文件；alpha.1+ 计划产出）
+        set_path = pdir / "settlements.jsonl"
+        if set_path.exists():
+            results.extend(check_settlements(
+                set_path,
+                expected={"steamId64": sid,
+                          "hd2AccountId": str((man.get("identity") or {}).get("hd2AccountId") or "")},
+                cursor=man.get("settlementsCursor"),
+                tag=f"J[{sid}]"))
+
         add(f"V04[{sid}] counts 自检", all(checks.values()),
             f"{counts} | 逐个对={checks} | 实际 exp={prog.get('experience')} 行={len(inv.get('items') or [])} "
             f"非零={sum(1 for v in stats.values() if v)} 成就={len(ach)}")
@@ -315,12 +422,16 @@ def format_text(report: dict) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="校验 save-export 产物是否符合自建服契约（只读）")
-    ap.add_argument("--export", required=True, help="导出根目录（含 players/ 与 index.json）")
-    ap.add_argument("--baseline", required=True, help="基线抓包目录（空号或主号）")
+    ap.add_argument("--export", default=None, help="导出根目录（含 players/ 与 index.json）")
+    ap.add_argument("--baseline", default=None, help="基线抓包目录（空号或主号）")
     ap.add_argument("--shape-ref", default=None,
                     help="参照基线（基线里某些数组为空时，用它学元素形状；通常给另一套基线）")
     ap.add_argument("--mission-end-template", default=None,
                     help="Mission/end 参照模板（默认取 samples/mission-end 里 exp>0 的第一个）")
+    ap.add_argument("--settlements-file", default=None,
+                    help="只校验一个 settlements.jsonl（可选，配合 --json 便于先验样例）")
+    ap.add_argument("--steam-id64", default=None, help="配合 --settlements-file：该玩家 SteamID64")
+    ap.add_argument("--hd2-account-id", default=None, help="配合 --settlements-file：该玩家 HD2 账号 id")
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     args = ap.parse_args(argv)
 
@@ -329,6 +440,18 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:  # noqa: BLE001
         pass
 
+    if args.settlements_file:
+        expected = ({"steamId64": args.steam_id64, "hd2AccountId": args.hd2_account_id}
+                    if args.steam_id64 and args.hd2_account_id else None)
+        crit = check_settlements(Path(args.settlements_file), expected=expected, tag="J")
+        failed = [c for c in crit if c["status"] == "FAIL"]
+        report = {"export": args.settlements_file, "baseline": "-", "players": [],
+                  "criteria": crit, "passed": len(crit) - len(failed), "failed": len(failed),
+                  "verdict": "PASS" if not failed else "FAIL"}
+        print(json.dumps(report, ensure_ascii=False, indent=1) if args.json else format_text(report))
+        return 0 if report["verdict"] == "PASS" else 1
+    if not args.export or not args.baseline:
+        ap.error("需要 --export 与 --baseline（或用 --settlements-file 单独校验事件流）")
     report = check(Path(args.export), Path(args.baseline),
                    Path(args.shape_ref) if args.shape_ref else None,
                    Path(args.mission_end_template) if args.mission_end_template else None)

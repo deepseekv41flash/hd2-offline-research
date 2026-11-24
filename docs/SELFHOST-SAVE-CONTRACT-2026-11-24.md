@@ -324,3 +324,34 @@ prebind + 未知 id             → 回落公共数据 experience=1（不猜）
 
 **校验**：我方会在 `validate_save_export.py` 增加 `settlements.jsonl` 逐行 schema 校验（可选文件），
 样例到了即可跑。
+
+### 12.3 JSONL 样例校验：PASS 9/9 + 六个口径确认（2026-11-24 14:30）
+
+样例 `D:\mod\tmp\settlements-sample.jsonl`（2 行）通过我方新增的 9 项逐行校验（J01–J09）：
+
+```
+J01 每行合法 JSON 对象 ✓   J02 11 个必填字段齐全 ✓   J03 schema=1/event=settlement ✓
+J04 身份三件套与 manifest 一致 ✓   J05 missionId 唯一（2 条）✓
+J06 experience 数值、items={mixId(str):amount(int)} ✓
+J07 packages={id32:{level,progress,platformAccountId}} 且 platformAccountId=玩家身份 ✓
+J08 ts 为 ISO8601 带显式时区 ✓   J09 来源枚举合法 ✓
+```
+
+**数值语义交叉核对**（与 11-23/11-24 两次实机验收数字一致）：
+- 行 1：`items = {897894480:7, 3608481516:4434}` = 该局**增量**（库存 8-1=7、5344-910=4434）✓
+- 行 2：`experience=210`、`items={897894480:1, 3608481516:910}` = 11-23 验收那局 ✓
+- 行 1 `packages={277818845:{level:5,progress:459}}` = 结算后**绝对**值，与 `mission_end.json` 一致 ✓
+
+**六个口径确认**：
+
+| # | 问题 | 答复 |
+|---|---|---|
+| 1 | `itemSource` 实际值 `rewards`/`badges` | **接受原样**，但请限定为枚举 `rewards|badges|both|none`；**不要**映射成 `mission_end`（会丢"物品来自响应哪个字段"的审计信息）。我方 J09 按枚举校验 |
+| 2 | `ts` 统一 `+08:00` | **OK**（秒级精度够）；要求始终带显式偏移（`Z` 或 `±HH:MM`），我方 J08 校验 |
+| 3 | `packages` 绝对值 + max 幂等 | **确认**（服务端按 max 合并，重试不双加）|
+| 4 | 老局（只有 `missions.last`）是否补发 | **选 a：补发 + `"source":"ledger-only"`**。约束：① 首次补发按 `ts` 升序写入，之后仅追加（时间戳单调）；② 这类行 `packages:{}`、`missionIndex` 可为 null；③ 建议 manifest 记 `settlements:{ledgerOnly:N}` 供审计；④ 去重键不变。**建议所有行都显式带 `source`**（`mission_end`/`ledger-only`），消费端不必推断 |
+| 5 | manifest 游标 `settlementsCursor` | **接受** `{"lines":N,"lastMissionId":"…"}`；建议再加可选 `lastTs`。我方 J10 会核对 lines 与末条 missionId |
+| 6 | 去重与追加 | **确认**：去重范围=**该玩家文件内**（非全局）；导出先读现有文件、按 missionId 跳过已存在行（重复导出幂等）；单行 append + flush、不回写历史行；`--no-optional` 不产；首次有事件才建文件；编码 UTF-8/LF/无 BOM、一行一个 JSON 对象（不 pretty print）。坏行容忍由消费端负责 |
+
+我方校验器已加 `settlements.jsonl` 支持（9+1 项，含 manifest 游标），既可随整个导出目录校验，
+也可 `--settlements-file <路径> --steam-id64 … --hd2-account-id …` 单独先验样例（22 条测试）。
