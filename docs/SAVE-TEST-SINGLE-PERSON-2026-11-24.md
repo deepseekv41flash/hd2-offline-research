@@ -111,7 +111,7 @@ python tools/mock_request_summary.py --log-dir D:/mod/tmp/save-test-20261124/moc
 3. mock 日志命中 `[player:76561198968648344]`（证明按玩家分档生效，不是 fallback 到公共档）；
 4. 引擎日志 **0 条** `SAVE` 行（幂等；出现即合并未生效）。
 
-### 7.1 离线预跑证据（2026-11-24 20:57，mock 已按 §7 命令起过一次）
+### 7.1 离线预跑证据（2026-11-24 20:57 起 21:13 复核 sha，mock 已按 §7 命令起过三次）
 
 | 端点 | baseline（无覆盖层命中）| 主号覆盖层 | mock 日志标记 |
 |---|---|---|---|
@@ -120,6 +120,17 @@ python tools/mock_request_summary.py --log-dir D:/mod/tmp/save-test-20261124/moc
 | `GET /api/Stats/profile/summary` | — | **27 项 / 23 非零**（813 B）| `[player:76561198968648344]` |
 | `GET /api/Progression/Items/Customize/v2` | — | `{"items":[]}`（17 B）| `[player:76561198968648344]` |
 | `GET /api/Progression/ItemPackages` | 4858 B | 同 baseline（**未覆盖**）| `[exact]` |
+
+**sha256 全等（21:13 复核，硬判据）**：mock 按玩家分档时把响应体 sha256 写进日志，
+与导出文件逐位比对**全等**，且与产品线经其引擎独立测得的哈希**完全一致**：
+
+| 端点 | 字节 | sha256（前缀）| mock 日志 |
+|---|---|---|---|
+| `/api/Progression` | 2468 | `0f4893f9f853` | `[player:76561198968648344 via header:getmotd sha:0f4893f9f853]` |
+| `/api/Progression/inventory` | 4574 | `c1583d25c160` | `… via header:getmotd sha:c1583d25c160` |
+| `/api/Stats/profile/summary` | 813 | `02e6e6633d13` | `… via header:getmotd sha:02e6e6633d13` |
+
+⇒ "同字节数可能是不同字节"，所以 S4 用 **sha256 全等**判定，不用字节数。
 
 结论：**覆盖层在本地按 §7 命令完全可用**，四条判据的前三条在 mock 侧已可复现；
 `ItemPackages` 是**目录数据**（不是玩家档），走 baseline 是设计而非缺口。
@@ -159,15 +170,31 @@ python tools/mock_request_summary.py --log-dir D:/mod/tmp/save-test-20261124/moc
 3. 带副号头 → 副号档，IP 被改写成副号；4. 再发无头 → `ip` 路径拿到副号档。
 （这两条只是说明 `ip`/`single` 兜底存在，**S4 不该走到**。）
 
-### 7.3 S4 判据的收敛版（判据③细化）
+### 7.3 S4 判据的收敛版（一条命令 + 人看部分）
 
-| # | 判据 | 通过条件 |
-|---|---|---|
-| ① 进度 | 界面经验 210（不是 1）| 覆盖层生效 |
-| ② 物品 | `3608481516=1000`、`897894480=1`、库存 56 行 | 覆盖层生效 |
-| ③ 身份路径 | 日志出现 `[player:76561198968648344 via header:prebind]` 与 `via header:getmotd`；**出现 `via ip` 即失败** | 证明是**身份头**给的档，不是 IP 兜底 |
-| ③′ 反证（可选）| `/health.players.learned_ips` 在 getmotd 后为 1、`last_header_source=getmotd` | 与请求日志互证 |
-| ④ 幂等 | 引擎 0 条 `SAVE` 行 | 产物已含账本值 |
+```bash
+# 起 mock 后、用户登录并进船之后跑：
+python tools/check_s4_replay.py   --mock-log D:/mod/tmp/save-test-20261124/mocklogs   --engine-log D:/mod/tmp/save-test-20261124/s4/state/logs/proxy.log   --export D:/mod/tmp/save-export-sample --steam 76561198968648344
+```
+
+| # | 判据 | 通过条件 | 谁判 |
+|---|---|---|---|
+| ① 进度 | 界面经验 **210**（不是 1）| 覆盖层生效 | **人看**（游戏内界面）|
+| ② 物品 | 界面/军械库显示 `3608481516=1000`、`897894480=1` | 覆盖层生效 | **人看** |
+| ③ 内容等同 | 三个玩家端点响应 **sha256 全等**导出文件 | 确实原样转发了这份档 | 工具（S4-1）|
+| ④ 身份路径 | 日志 `via header:prebind` **且** `via header:getmotd`；**`via ip` 出现即失败** | 是身份头给的档，不是 IP 兜底 | 工具（S4-2）|
+| ⑤ 幂等 | 引擎 **0 条 `SAVE`** 行 | 产物已含账本值，引擎不该往回写 | 工具（S4-3）|
+
+### 7.4 ★ S4-1 的失效条件（产品线指出，违反必致假阳/假阴）
+
+`sha256 全等` 的前提是 **S4 隔离态账本与导出产物同口径 ⇒ 引擎合并零改动**。若账本某项**高于**产物，
+引擎按"只抬不降"合并 ⇒ 响应改变是**正确行为**，sha 自然不等。因此：
+
+1. **固定用预置的 `s4/state`**（内含主号档副本），不要换成"用户刚打了几局"的新账本；
+2. 若必须换账本，判据退回"④ `via` + ①②界面数值"，工具会把 sha 不符标成 **SKIP（说明可能是合并）** 而不是 FAIL；
+3. `customize_v2.json` 同口径可比（`{"items":[]}`，17 B）——它**不在** sha 三端点里，仅作旁证。
+
+工具实现：`tools/check_s4_replay.py`（10 条单测）；mock 侧 `Response.digest` + 日志 `sha:<12>`（10 条单测）。
 
 ## 8. S2 判据（换号不混档）— 定稿
 
@@ -189,13 +216,14 @@ python tools/mock_request_summary.py --log-dir D:/mod/tmp/save-test-20261124/moc
 |---|---|---|
 | S2-1 | 主号账本 `identity.steam_id` | == 主号（**状态为准**，不看日志）|
 | S2-2 | 副号账本存在性 + `identity.steam_id` | 已创建且 == 副号 |
-| S2-3 | 主号 `earned` 字段级对比 before | exp / `inventory_rows` / `achievements_count` 三者不变；`identity` 除 `source` 外不许变 |
+| S2-3 | 主号 **`earned` 整块逐字段等**（exp / 成就数 / inventory_rows / inventory_top / inventory_amount_sum / stats_nonzero / missions_count / missions_last / purchases_count …）| 任意一项变化即 FAIL；`identity` 除 `source` 外不许变。**不拿 sha 当判据**（身份重写必刷 `updated_at`）|
 | S2-4 | `logs/proxy.log` | 两条换号痕迹齐全（主→副、副→主）；接受 `身份切换：A（已识别）→ B` 与 `身份确认：A（local/未识别）已合并进 B` 两种文案 |
 | S2-5 | 日志「会话回滚」行 + `runtime/saves/_orphan/` | 都为 0/空（本局无写入）|
 | S2-6 | `_last.json` | `last_steam_id == 主号`（最后登录）|
 
 设计取舍（实测踩出来的）：
 - **主号账本 sha 变化不算失败**：引擎重写同内容或刷 `updated_at` 都会变；真正的混档证据是 S2-3 的字段级变化。
+- **`.bak` 出现/更新 = 正常**（`set_identity()` 无条件写盘会轮转 `.bak`；产品线实测 A 档每次身份重写都刷）——工具只打 `info-bak`，不判失败。
 - **S2-6 是弱判据**：测试开始前它天然为 PASS（最后登录本来就是主号），别把它当"换号成功"的证据。
 - **S2-4 依赖产品文案**：文案在 `src/hd2proxy/engine/active_save.py:760`（warn 通道）与 `saves.py:797`（log 通道），
   两处措辞略有差异（`**不合并**` vs `不合并`），工具用 `身份切换：` / `身份确认：` 前缀匹配，改文案时需同步工具。

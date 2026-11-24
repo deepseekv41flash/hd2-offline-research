@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -38,6 +39,8 @@ class Response:
                                 #   header-unresolved:<tag> / uncertain:<src> / ip / single / ""
                                 # 为什么单独记：`PlayerStore.last_source` 是 sticky 的（最后一次解析），
                                 # 事后读 /health 不能证明"这个响应是靠头还是靠 IP 给的"。
+    digest: str = ""            # 响应体 sha256（仅按玩家分档时算）：把"确实吐了这份档"变成**可验证**的硬判据
+                                #   —— 同字节数可能是不同字节；sha256 全等才等价于"原样转发了该玩家的文件"。
 
     @property
     def text(self) -> str:
@@ -191,7 +194,8 @@ class MockHandler:
                     # resolution 记录**本请求**是靠头(header:*)还是靠学到的 IP(ip) 解析到的，
                     # S4 判据要用它区分"身份头真的到了 mock"和"只是 IP 兜底"。
                     resp = Response(200, payload, "application/json",
-                                    source=f"player:{player.steam_id}", resolution=how)
+                                    source=f"player:{player.steam_id}", resolution=how,
+                                    digest=hashlib.sha256(payload).hexdigest())
                     self.stats["player"] += 1
                     self._record(method, raw_path, body, resp)
                     return resp
@@ -415,6 +419,7 @@ class MockHandler:
             "in": len(body or b""), "status": resp.status,
             "out": len(resp.body or b""), "source": resp.source,
             "resolution": resp.resolution,
+            "digest": getattr(resp, "digest", ""),
         })
         if len(self.request_log) > 5000:
             del self.request_log[:2500]

@@ -68,15 +68,17 @@ def _ledger(after: dict, steam_id: str) -> dict | None:
     return (after.get("saves") or {}).get(_save_id(steam_id))
 
 
-def _earned_counts(ledger: dict | None) -> dict:
-    if not ledger:
-        return {}
-    e = ledger.get("earned") or {}
-    return {
-        "experience": e.get("experience"),
-        "inventory_rows": e.get("inventory_rows"),
-        "achievements_count": e.get("achievements_count"),
-    }
+def _earned_drift(before: dict | None, after: dict | None) -> dict:
+    """`earned` 块逐字段对比（产品线 2026-11-24 离线实测口径：A 档 `earned` 必须**全等**）。
+
+    比对**整个 earned 摘要**而不是挑三个字段：exp / 成就数 / inventory_rows / inventory_top /
+    inventory_amount_sum / stats_nonzero / missions_count / missions_last / purchases_count …
+    任意一项变了就说明有东西写进了这位玩家的档，都要报出来。
+    """
+    eb = (before or {}).get("earned") or {}
+    ea = (after or {}).get("earned") or {}
+    return {k: (eb.get(k), ea.get(k))
+            for k in (set(eb) | set(ea)) if eb.get(k) != ea.get(k)}
 
 
 def _identity_unchanged_except_source(before_ident: dict, after_ident: dict) -> list[str]:
@@ -119,20 +121,21 @@ def evaluate(before: dict, after: dict, log_text: str,
         add("S2-2", ok, "副号账本已建，identity.steam_id=%s（期望 %s）"
             % (ident.get("steam_id"), alt_id))
 
-    # S2-3 主号账本无跨档污染（字段级）
+    # S2-3 主号账本无跨档污染：earned 全等 + identity 只许 source 变
     if not main_b or not main_a:
         add("S2-3", False, "缺 before/after 主号账本，无法判污染", level="skip")
     else:
-        cb, ca = _earned_counts(main_b), _earned_counts(main_a)
-        drift = {k: (cb.get(k), ca.get(k)) for k in cb if cb.get(k) != ca.get(k)}
+        drift = _earned_drift(main_b, main_a)
         ident_drift = _identity_unchanged_except_source(
             main_b.get("identity") or {}, main_a.get("identity") or {})
         ok = not drift and not ident_drift
-        detail = "主号进度未变（exp=%s/库存 %s 行/成就 %s）" % (
-            ca.get("experience"), ca.get("inventory_rows"), ca.get("achievements_count"))
+        e = main_a.get("earned") or {}
+        detail = ("主号 `earned` 全等（exp=%s/库存 %s 行/成就 %s/missions %s）"
+                  % (e.get("experience"), e.get("inventory_rows"),
+                     e.get("achievements_count"), e.get("missions_count")))
         if drift:
-            detail = "主号进度被改写：%s" % ", ".join(
-                "%s %r→%r" % (k, v[0], v[1]) for k, v in drift.items())
+            detail = "主号 `earned` 被改写：%s" % ", ".join(
+                "%s %r→%r" % (k, v[0], v[1]) for k, v in sorted(drift.items()))
         if ident_drift:
             detail += "；identity 变化：%s" % "; ".join(ident_drift)
         add("S2-3", ok, detail)
@@ -170,6 +173,14 @@ def evaluate(before: dict, after: dict, log_text: str,
     ok6 = str(last.get("last_steam_id")) == main_id
     add("S2-6", ok6, "_last.last_steam_id=%s、last_save_id=%s（期望 %s）"
         % (last.get("last_steam_id"), last.get("last_save_id"), main_id))
+
+    # 提示级：`.bak` 出现/更新（产品线实测：set_identity 无条件写盘会轮转 .bak，属正常，不是回滚证据）
+    if main_b and main_a:
+        bb = (main_b.get("bak") or {}).get("exists")
+        ba = (main_a.get("bak") or {}).get("exists")
+        if bb != ba:
+            add("info-bak", True, "主号 `.bak` 存在性 %s → %s（身份重写的正常副作用，不是回滚）"
+                % (bb, ba), level="info")
 
     # 提示级：sha 变化（不算失败）
     if main_b and main_a and main_b.get("sha256") != main_a.get("sha256"):

@@ -13,7 +13,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from pathlib import Path
 
 from mock import server as srv
@@ -125,7 +127,9 @@ def test_log_line_renders_via(synthetic_capture: Path, tmp_path: Path):
                     headers={"x-hd2-account": HD2_A, "x-hd2-account-source": "getmotd"})
     line = srv._format_request_log("GET", "/api/Progression", b"", resp,
                                    peer_ip="127.0.0.1", eff_ip="127.0.0.1")
-    assert f"[player:{STEAM_A} via header:getmotd]" in line
+    assert f"[player:{STEAM_A} via header:getmotd sha:" in line
+    # sha 是响应体哈希（S4 硬判据用），长度固定 12 位十六进制
+    assert re.search(r"sha:[0-9a-f]{12}\s*\]", line), line
 
 
 def test_log_line_omits_via_when_no_resolution():
@@ -140,6 +144,9 @@ def test_log_line_keeps_forwarded_ip_note():
     """转发场景（eff_ip≠peer_ip）仍带外层 ` via <peer_ip>`，与内层解析依据不混淆。"""
     line = srv._format_request_log(
         "GET", "/api/Progression", b"",
-        Response(200, b"{}", "application/json", f"player:{STEAM_A}", "header:prebind"),
+        Response(200, b"{}", "application/json", f"player:{STEAM_A}",
+                 resolution="header:prebind",
+                 digest=hashlib.sha256(b"{}").hexdigest()),
         peer_ip="100.64.0.9", eff_ip="127.0.0.1")
-    assert f"[player:{STEAM_A} via header:prebind] via 100.64.0.9" in line
+    assert f"[player:{STEAM_A} via header:prebind sha:" in line
+    assert line.endswith("] via 100.64.0.9")

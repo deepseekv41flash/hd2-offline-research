@@ -72,9 +72,12 @@ def _format_request_log(method: str, path: str, body: bytes, resp: Response, *,
     多线程下事后读 `/health` 既可能被别的请求覆盖，也无法证明"这个响应"靠头还是靠 IP。
     """
     how = f" via {resp.resolution}" if getattr(resp, "resolution", "") else ""
+    dig = getattr(resp, "digest", "")
+    sha = f" sha:{dig[:12]}" if dig else ""
     via = "" if eff_ip == peer_ip else f" via {peer_ip}"
     return (f"{_now_stamp()} {method:6s} {path} "
-            f"{len(body)}B -> {resp.status} {len(resp.body or b'')}B [{resp.source}{how}]{via}")
+            f"{len(body)}B -> {resp.status} {len(resp.body or b'')}B "
+            f"[{resp.source}{how}{sha}]{via}")
 
 
 class _Logger:

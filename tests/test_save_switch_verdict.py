@@ -210,3 +210,53 @@ def test_switch_regex_tolerates_legacy_wording():
             "steam_61199881579811；不合并（避免跨玩家混档）\n")
     ev = svv.parse_log(text)
     assert ev["switches"] == [("steam_76561198968648344", "steam_61199881579811")]
+
+
+def test_non_core_earned_field_drift_fails(tmp_path: Path):
+    """`earned` 里**非核心字段**变了也要 FAIL（产品线实测口径：A 档 earned 必须全等）。
+
+    旧实现只比对 exp/库存行数/成就数，会把"统计被写了"当成没问题 —— 这里锁死。
+    """
+    b = _ledger(STEAM_A, HD2_A)
+    b["earned"] = dict(b["earned"], stats={"totalEnemyKills": 0})
+    dirty = _ledger(STEAM_A, HD2_A)
+    dirty["earned"] = dict(dirty["earned"], stats={"totalEnemyKills": 7})
+    state = _write_state(tmp_path, {STEAM_A: dirty,
+                                    STEAM_B: _ledger(STEAM_B, HD2_B, experience=0)},
+                         last_steam=STEAM_A, log=GOOD_LOG)
+    after = svv.capture(state)
+    before = {"saves": {f"steam_{STEAM_A}": _summarize(tmp_path, b)}}
+    res = svv.evaluate(before, after, GOOD_LOG, [], STEAM_A, STEAM_B)
+    assert "S2-3" in res["failed"], res["checks"]
+    detail = next(c for c in res["checks"] if c["id"] == "S2-3")["detail"]
+    assert "stats_nonzero" in detail
+
+
+def test_missions_count_drift_fails(tmp_path: Path):
+    """换号前打了任务（missions 0→1）也会被 S2-3 抓到 —— 提醒"只进船不打任务"的前提被破坏。"""
+    b = _ledger(STEAM_A, HD2_A)
+    played = _ledger(STEAM_A, HD2_A)
+    played["earned"] = dict(played["earned"], missions={"count": 1, "last": "m-1"})
+    state = _write_state(tmp_path, {STEAM_A: played,
+                                    STEAM_B: _ledger(STEAM_B, HD2_B, experience=0)},
+                         last_steam=STEAM_A, log=GOOD_LOG)
+    after = svv.capture(state)
+    before = {"saves": {f"steam_{STEAM_A}": _summarize(tmp_path, b)}}
+    res = svv.evaluate(before, after, GOOD_LOG, [], STEAM_A, STEAM_B)
+    assert "S2-3" in res["failed"]
+    assert "missions" in next(c for c in res["checks"] if c["id"] == "S2-3")["detail"]
+
+
+def test_bak_appearance_is_info_not_failure(tmp_path: Path):
+    """`.bak` 出现 = 身份重写的正常副作用（产品线实测），只作 info，不能判失败。"""
+    state = _write_state(tmp_path, {STEAM_A: _ledger(STEAM_A, HD2_A),
+                                    STEAM_B: _ledger(STEAM_B, HD2_B, experience=0)},
+                         last_steam=STEAM_A, log=GOOD_LOG)
+    (state / "runtime" / "saves" / f"steam_{STEAM_A}.json.bak").write_text(
+        json.dumps(_ledger(STEAM_A, HD2_A, experience=200)), encoding="utf-8")
+    after = svv.capture(state)
+    before = {"saves": {f"steam_{STEAM_A}": _summarize(tmp_path, _ledger(STEAM_A, HD2_A))}}
+    res = svv.evaluate(before, after, GOOD_LOG, [], STEAM_A, STEAM_B)
+    assert res["verdict"] == "PASS", res["checks"]
+    info = [c for c in res["checks"] if c["id"] == "info-bak"]
+    assert info and info[0]["ok"]
