@@ -280,3 +280,23 @@ def test_watchdog_end_to_end_writes_alert(tmp_path: Path, monkeypatch):
     assert alert.exists()
     data = json.loads(alert.read_text(encoding="utf-8"))
     assert data["label"] == "suspect-launcher-frozen"
+
+
+def test_summarize_records_launcher_windows():
+    """启动器窗口也要进摘要：它是"启动器被改"的脏窗口边界（1 s 采样派生）。"""
+    samples = [
+        _s("01:43:20"),
+        {"t": "01:43:23", "game": [], "launcher": [{"pid": 21260}], "eac_pid": [],
+         "eac_service": "stopped", "conns": {"total": 0, "established": 0,
+                                             "remote443": 0, "remote_ips": []}},
+        {"t": "01:43:24", "game": [], "launcher": [{"pid": 21260}], "eac_pid": [],
+         "eac_service": "running", "conns": {"total": 0, "established": 0,
+                                             "remote443": 0, "remote_ips": []}},
+        _s("01:43:27", game=[13332], eac=[19868], conns=1),
+    ]
+    sm = wl.summarize(samples)
+    assert len(sm["launcher_windows"]) == 1
+    assert sm["launcher_windows"][0]["first"] == "01:43:23"
+    assert sm["launcher_windows"][0]["last"] == "01:43:24"
+    assert sm["launcher_windows"][0]["samples"] == 2
+    assert sm["game_windows"][0]["first"] == "01:43:27"

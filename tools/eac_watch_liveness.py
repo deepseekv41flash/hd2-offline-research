@@ -142,6 +142,17 @@ def summarize(samples: list[dict]) -> dict:
         else:
             windows.append({"pid": pid, "first": s["t"], "last": s["t"], "samples": 1})
 
+    # 启动器窗口（"启动器被改"的时间边界：脏窗口 = launcher_first ~ game_first）
+    launcher_samples = [s for s in samples if s.get("launcher")]
+    launcher_windows: list[dict] = []
+    for s in launcher_samples:
+        pid = s["launcher"][0]["pid"]
+        if launcher_windows and launcher_windows[-1]["pid"] == pid:
+            launcher_windows[-1]["last"] = s["t"]
+            launcher_windows[-1]["samples"] += 1
+        else:
+            launcher_windows.append({"pid": pid, "first": s["t"], "last": s["t"], "samples": 1})
+
     eac_alive = sum(1 for s in game_samples if s.get("eac_pid"))
     ip_counter: Counter[str] = Counter()
     for s in game_samples:
@@ -152,6 +163,7 @@ def summarize(samples: list[dict]) -> dict:
         "t0": samples[0]["t"] if samples else None,
         "t1": samples[-1]["t"] if samples else None,
         "game_windows": windows,
+        "launcher_windows": launcher_windows,
         "game_samples": len(game_samples),
         "eac_alive_samples": eac_alive,
         "eac_alive_ratio": round(eac_alive / len(game_samples), 3) if game_samples else 0.0,

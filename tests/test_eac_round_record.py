@@ -105,3 +105,45 @@ def test_void_arm_is_accepted_and_flagged():
     arm, warns = rr.resolve_arm("void", None)
     assert arm == "void"
     assert any("不进任何臂" in w for w in warns)
+
+
+# ---------------------------------------------------------------- 启动器脏窗口（1 s 采样派生）
+def test_parse_hms():
+    assert rr._parse_hms("01:43:23.456") == 1 * 3600 + 43 * 60 + 23.456
+    assert rr._parse_hms("2026-11-25T01:43:23") == 1 * 3600 + 43 * 60 + 23
+    assert rr._parse_hms("") is None and rr._parse_hms(None) is None
+    assert rr._parse_hms("garbage") is None
+
+
+def test_derive_windows_computes_launcher_to_game():
+    """脏窗口 = 启动器出现 → 游戏出现（实测 ~3.5–4 s），1 s 采样足够复算。"""
+    summary = {"launcher_windows": [{"pid": 21260, "first": "01:43:23.000",
+                                     "last": "01:43:27.000", "samples": 5}],
+               "game_windows": [{"pid": 13332, "first": "01:43:27.000",
+                                 "last": "01:45:00.000", "samples": 90}]}
+    d = rr.derive_windows(summary, {})
+    assert d["launcher_first_seen"] == "01:43:23.000"
+    assert d["game_first_seen"] == "01:43:27.000"
+    assert d["launcher_to_game_s"] == 4.0
+
+
+def test_derive_windows_crosschecks_reported_iat():
+    summary = {"launcher_windows": [{"pid": 1, "first": "01:43:23.000", "last": "x", "samples": 5}],
+               "game_windows": [{"pid": 2, "first": "01:43:27.200", "last": "y", "samples": 90}]}
+    d = rr.derive_windows(summary, {"iat_alive_ms": "3800"})
+    cc = d["iat_alive_ms_crosscheck"]
+    assert cc["reported_s"] == 3.8 and cc["sampler_s"] == 4.2
+    assert cc["consistent"] is True          # 差 0.4 s < 1.5 s 容差
+
+
+def test_derive_windows_flags_inconsistent_reported_iat():
+    summary = {"launcher_windows": [{"pid": 1, "first": "01:43:23.000", "last": "x", "samples": 5}],
+               "game_windows": [{"pid": 2, "first": "01:43:27.000", "last": "y", "samples": 90}]}
+    d = rr.derive_windows(summary, {"iat_alive_ms": "150"})   # 早期误传的 100~300 ms
+    assert d["iat_alive_ms_crosscheck"]["consistent"] is False
+
+
+def test_derive_windows_without_launcher():
+    d = rr.derive_windows({"game_windows": [{"pid": 1, "first": "01:43:27.000",
+                                             "last": "y", "samples": 9}]}, {})
+    assert "launcher_to_game_s" not in d

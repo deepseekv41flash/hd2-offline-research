@@ -103,7 +103,55 @@ def build_record(arm: str, run_dir: Path, liveness_jsonl: Path | None = None,
         }
         rec["times"].setdefault("game_appeared_from_sampler",
                                 (summary.get("game_windows") or [{}])[0].get("first"))
+        rec["derived"] = derive_windows(summary, times or {})
     return rec
+
+
+def _parse_hms(v) -> float | None:
+    """'01:43:23.456' / '01:43:23' → 当天秒数（用于求差）；不可解析返回 None。"""
+    if not v or not isinstance(v, str):
+        return None
+    core = v.strip().split("T")[-1]
+    try:
+        hh, mm, rest = core.split(":")
+        return int(hh) * 3600 + int(mm) * 60 + float(rest)
+    except (ValueError, AttributeError):
+        return None
+
+
+def derive_windows(summary: dict, times: dict) -> dict:
+    """从采样时间线派生"启动器脏窗口"，并与 RE 报的 `iat_alive_ms` 交叉核对（纯函数）。
+
+    为什么重要（2026-11-25 更正）：补丁必须赶在启动器调 `CreateProcessW` **之前**装上，
+    所以"启动器被改"的窗口 ≈ 启动器出现 → 游戏出现，实测 **~3.5–4 s**（不是早期误传的 100–300 ms）。
+    这个窗口是**归因边界**：C 臂若出现异常，只能由这个脏窗口解释（别的东西都没变）。
+
+    注意：**不能用"异常时刻是否落在窗口内"来定位原因** —— EAC 上报通道 +44 s 才建立，
+    4 s 察觉 ≠ 4 s 上报，延迟上报才是现实机制。归因只能靠 A/C/B 三臂差。
+    """
+    first_l = (summary.get("launcher_windows") or [{}])[0].get("first")
+    first_g = (summary.get("game_windows") or [{}])[0].get("first")
+    out: dict = {"launcher_first_seen": first_l, "game_first_seen": first_g,
+                 "note": "脏窗口=启动器出现→游戏出现；异常时刻不落在窗口内是正常的（上报延迟）"}
+    a, b = _parse_hms(first_l), _parse_hms(first_g)
+    if a is not None and b is not None:
+        out["launcher_to_game_s"] = round(b - a, 3)
+    # 与 RE 报的补丁存活时长交叉核对（采样 1 s 粒度，允许 ±1.5 s）
+    iat = times.get("iat_alive_ms")
+    if iat is not None and out.get("launcher_to_game_s") is not None:
+        try:
+            re_s = float(iat) / 1000.0
+        except (TypeError, ValueError):
+            re_s = None
+        if re_s is not None:
+            out["iat_alive_ms_reported"] = float(iat)
+            out["iat_alive_ms_crosscheck"] = {
+                "reported_s": round(re_s, 3),
+                "sampler_s": out["launcher_to_game_s"],
+                "delta_s": round(abs(re_s - out["launcher_to_game_s"]), 3),
+                "consistent": abs(re_s - out["launcher_to_game_s"]) <= 1.5,
+            }
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -121,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--launcher-gone")
     ap.add_argument("--game-appeared")
     ap.add_argument("--inject-at-ms", help="RE 的注入完成时刻（相对进程出现，ms）")
+    ap.add_argument("--iat-alive-ms", help="RE 报的补丁存活时长（ms，预期 3.5k~4k）")
     ap.add_argument("--re-json", help="RE 那一轮的 json 路径（整份读入 re_fields）")
     ap.add_argument("--note", default="")
     ap.add_argument("--out", required=True)
@@ -138,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
         "launcher_gone": args.launcher_gone,
         "game_appeared": args.game_appeared,
         "inject_at_ms": args.inject_at_ms,
+        "iat_alive_ms": args.iat_alive_ms,
     }.items() if v}
     re_fields = {}
     if args.re_json:
