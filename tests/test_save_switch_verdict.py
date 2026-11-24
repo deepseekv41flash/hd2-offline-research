@@ -137,19 +137,55 @@ def test_source_change_is_tolerated(tmp_path: Path):
     assert ids["S2-3"]["ok"], ids["S2-3"]["detail"]
 
 
-def test_rollback_and_orphan_fail_s2_5(tmp_path: Path):
-    log = GOOD_LOG + "20:53:11 ⚠ 会话回滚：steam_76561198968648344 已整档恢复到会话基准（mode=snapshot）\n"
+def test_main_rolled_back_fails_s2_5(tmp_path: Path):
+    """**主号档被回滚/另存** = 主号数据被动过 → S2-5 必须 FAIL。"""
+    log = GOOD_LOG + ("20:53:11 ⚠ 会话回滚：steam_%s 已整档恢复到会话基准（mode=snapshot）" % STEAM_A) + chr(10)
+    orphan = {"name": f"20261124-205311-steam_{STEAM_A}-identity-switch.json",
+              "save_id": f"steam_{STEAM_A}", "reason": "identity-switch",
+              "discarded_keys": ["experience"]}
     state = _write_state(tmp_path, {STEAM_A: _ledger(STEAM_A, HD2_A),
-                                    STEAM_B: _ledger(STEAM_B, HD2_B, experience=1)},
-                         last_steam=STEAM_A, orphans=["20261124-205311-steam_x-identity-switch.json"],
-                         log=log)
+                                    STEAM_B: _ledger(STEAM_B, HD2_B, experience=0)},
+                         last_steam=STEAM_A, log=log,
+                         orphans=[f"20261124-205311-steam_{STEAM_A}-identity-switch.json"])
     after = svv.capture(state)
-    before = {"saves": {f"steam_{STEAM_A}": after["saves"][f"steam_{STEAM_A}"]}}
-    res = svv.evaluate(before, after, log, ["20261124-205311-steam_x-identity-switch.json"],
-                       STEAM_A, STEAM_B)
+    before = {"saves": {f"steam_{STEAM_A}": _summarize(tmp_path, _ledger(STEAM_A, HD2_A))}}
+    res = svv.evaluate(before, after, log, [orphan], STEAM_A, STEAM_B)
     assert "S2-5" in res["failed"]
     detail = next(c for c in res["checks"] if c["id"] == "S2-5")["detail"]
-    assert "会话回滚" in detail and "_orphan" in detail
+    assert "主号" in detail
+
+
+def test_other_account_rollback_is_info_not_failure(tmp_path: Path):
+    """**其他账号**的会话回滚 + 脏档另存 = G2 设计内（只进船也可能写服务端自算字段）→ 只打 info。"""
+    log = GOOD_LOG + ("21:21:14 ⚠ 会话回滚：steam_%s 已整档恢复到会话基准（mode=restored）" % STEAM_B) + chr(10)
+    orphan = {"name": f"20261124-212114-steam_{STEAM_B}-identity-switch.json",
+              "save_id": f"steam_{STEAM_B}", "reason": "identity-switch",
+              "discarded_keys": ["stats"]}
+    state = _write_state(tmp_path, {STEAM_A: _ledger(STEAM_A, HD2_A),
+                                    STEAM_B: _ledger(STEAM_B, HD2_B, experience=0)},
+                         last_steam=STEAM_A, log=log,
+                         orphans=[f"20261124-212114-steam_{STEAM_B}-identity-switch.json"])
+    after = svv.capture(state)
+    before = {"saves": {f"steam_{STEAM_A}": _summarize(tmp_path, _ledger(STEAM_A, HD2_A))}}
+    res = svv.evaluate(before, after, log, [orphan], STEAM_A, STEAM_B)
+    assert res["verdict"] == "PASS", res["checks"]
+    info = next(c for c in res["checks"] if c["id"] == "info-orphan")
+    assert "设计内" in info["detail"] and "stats" in info["detail"]
+
+
+def test_read_orphans_extracts_metadata(tmp_path: Path):
+    """`read_orphans` 只抽判据需要的元信息（save_id / reason / discarded 键名）。"""
+    d = tmp_path / "_orphan"
+    d.mkdir()
+    (d / f"20261124-212114-steam_{STEAM_B}-identity-switch.json").write_text(
+        json.dumps({"save_id": f"steam_{STEAM_B}", "reason": "identity-switch",
+                    "discarded": {"stats": {}, "experience": {}}, "doc": {"secret": 1}}),
+        encoding="utf-8")
+    rows = svv.read_orphans(d)
+    assert rows[0]["save_id"] == f"steam_{STEAM_B}"
+    assert rows[0]["reason"] == "identity-switch"
+    assert rows[0]["discarded_keys"] == ["experience", "stats"]
+    assert "doc" not in rows[0]          # 不把脏档正文塞进结果
 
 
 def test_merge_variant_log_accepted(tmp_path: Path):

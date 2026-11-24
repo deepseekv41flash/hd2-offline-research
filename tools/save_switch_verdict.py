@@ -48,6 +48,33 @@ SWITCH_RE = re.compile(
 MERGE_RE = re.compile(r"身份确认：\s*(steam_\d+)（[^）]*）\s*已合并进\s*(steam_\d+)")
 PREBIND_RE = re.compile(r"首屏预绑定\s*(steam_\d+)")
 ROLLBACK_RE = re.compile(r"会话回滚")
+ROLLBACK_ID_RE = re.compile(r"会话回滚：\s*(steam_\d+)")
+
+
+def read_orphans(orphan_dir: Path) -> list[dict]:
+    """读 `_orphan/*.json` 的**元信息**（不读整份脏档正文，只取判据需要的字段）。
+
+    产品在换号回滚时把脏档全文写进 `_orphan/<ts>-<save_id>-<reason>.json`，
+    内含 `save_id` / `reason` / `discarded`（被丢弃条目的摘要）。
+    判据只关心"被另存的是谁的档"和"丢了什么"——所以这里只抽这几个键。
+    """
+    out: list[dict] = []
+    if not Path(orphan_dir).is_dir():
+        return out
+    for path in sorted(Path(orphan_dir).glob("*.json")):
+        item = {"name": path.name, "save_id": "", "reason": "", "discarded_keys": []}
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(doc, dict):
+                item["save_id"] = str(doc.get("save_id") or "")
+                item["reason"] = str(doc.get("reason") or "")
+                disc = doc.get("discarded")
+                if isinstance(disc, dict):
+                    item["discarded_keys"] = sorted(disc)
+        except Exception:  # noqa: BLE001
+            item["reason"] = "unreadable"
+        out.append(item)
+    return out
 
 
 def _save_id(steam_id: str) -> str:
@@ -60,8 +87,10 @@ def parse_log(text: str) -> dict:
     merges = [(m.group(1), m.group(2)) for m in MERGE_RE.finditer(text)]
     prebinds = [m.group(1) for m in PREBIND_RE.finditer(text)]
     rollbacks = [ln.strip() for ln in text.splitlines() if ROLLBACK_RE.search(ln)]
-    return {"switches": switches, "merges": merges,
-            "prebinds": prebinds, "rollbacks": rollbacks}
+    rollback_ids = [m.group(1) for ln in rollbacks
+                    for m in [ROLLBACK_ID_RE.search(ln)] if m]
+    return {"switches": switches, "merges": merges, "prebinds": prebinds,
+            "rollbacks": rollbacks, "rollback_ids": rollback_ids}
 
 
 def _ledger(after: dict, steam_id: str) -> dict | None:
@@ -93,7 +122,7 @@ def _identity_unchanged_except_source(before_ident: dict, after_ident: dict) -> 
 
 
 def evaluate(before: dict, after: dict, log_text: str,
-             orphan_files: list[str], main_id: str, alt_id: str) -> dict:
+             orphan_files: list[dict], main_id: str, alt_id: str) -> dict:
     checks: list[dict] = []
 
     def add(cid, ok, detail, *, level="fail"):
@@ -157,16 +186,36 @@ def evaluate(before: dict, after: dict, log_text: str,
     else:
         add("S2-4", False, "日志无「身份切换 / 已合并」行（引擎没认出换号，或日志被截断）")
 
-    # S2-5 无写入 ⇒ 无回滚、无 orphan
-    ok5 = not events["rollbacks"] and not orphan_files
-    detail5 = "无会话回滚、_orphan/ 为空"
-    if events["rollbacks"]:
-        detail5 = "出现 %d 条「会话回滚」——本局有过写入（换号前打了任务）" % len(
-            events["rollbacks"])
-    if orphan_files:
-        detail5 += "；_orphan/ 有 %d 个文件：%s" % (
-            len(orphan_files), ", ".join(orphan_files[:3]))
-    add("S2-5", ok5, detail5)
+    # S2-5 主号档**不得被回滚/另存**（其他账号的会话回滚是设计内）
+    # 语义依据（2026-11-24 实机）：换号时"本局写入=有 ⇒ 整档回滚 + 脏档另存 orphan"是 G2 设计，
+    # 而且"只进船不打任务"也可能产生写入（首屏安全合并会写服务端自算字段，如 stats.profile）。
+    # 所以判据不是"有没有回滚"，而是**被回滚的是谁的档**：
+    #   · 回滚/另存主号档 → 主号被动过 = FAIL
+    #   · 只回滚别的账号 → 设计内 = info（脏档仍在 _orphan 可审计）
+    main_sid = _save_id(main_id)
+    main_rollbacks = [ln for ln in events["rollbacks"] if main_sid in ln]
+    main_orphans = [o for o in orphan_files if str(o.get("save_id") or "") == main_sid]
+    others = [o for o in orphan_files if str(o.get("save_id") or "") != main_sid]
+    if main_rollbacks or main_orphans:
+        add("S2-5", False,
+            "**主号档被回滚/另存**：回滚行 %d 条、orphan %d 个 —— 主号数据被动过"
+            % (len(main_rollbacks), len(main_orphans)))
+    else:
+        add("S2-5", True, "主号档未被回滚、未被另存（_orphan 中无主号档）")
+
+    # info：其他账号的会话回滚（设计内，可审计）
+    if others:
+        parts = []
+        for o in others[:3]:
+            disc = o.get("discarded_keys") or []
+            parts.append("%s（reason=%s，丢弃 %d 项%s）" % (
+                str(o.get("name") or o.get("save_id")),
+                o.get("reason") or "?",
+                len(disc),
+                ("：" + ", ".join(disc[:4])) if disc else ""))
+        add("info-orphan", True,
+            "其他账号的脏档已另存 _orphan（设计内，非混档）：%s" % "；".join(parts),
+            level="info")
 
     # S2-6 _last 指向最后登录的主号
     last = ((after.get("extras") or {}).get("_last") or {})
@@ -235,8 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     after = capture(state)
     log_path = Path(args.log) if args.log else state / "logs" / "proxy.log"
     log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
-    orphan_dir = state / "runtime" / "saves" / "_orphan"
-    orphans = sorted(p.name for p in orphan_dir.glob("*")) if orphan_dir.is_dir() else []
+    orphans = read_orphans(state / "runtime" / "saves" / "_orphan")
 
     result = evaluate(before, after, log_text, orphans, args.main, args.alt)
     if args.json:
