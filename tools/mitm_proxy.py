@@ -483,6 +483,8 @@ class MitmProxy:
             self._log({
                 "host": host, "method": method, "path": path,
                 "ua": headers.get("user-agent"),
+                # 完整请求头（EAC 客户端自报身份：UA / 自定义头 / Content-Type）
+                "req_headers": dict(headers),
                 "req_len": req_len, "_req_body": req_body,
                 "status": status, "resp_len": len(resp_raw),
                 "resp_ctype": ctype, "_resp_body": resp_body,

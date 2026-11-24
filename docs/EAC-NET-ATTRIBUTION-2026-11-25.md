@@ -148,3 +148,58 @@ T6a 用**本仓 CA 对 13 个域名（含 EOS/EAC）做 TLS 终止**，游戏**�
 1. **首选**：CONNECT 代理 + `HKCU` IE 代理 + 给游戏进程 `HTTP(S)_PROXY`（`setx` + 重启 Steam 让子进程继承）；
 2. 备选：WinDivert 按 IP 透明重定向（Secure Boot 下需 WHQL 签名，成本高）；
 3. 兜底：只采启动器通道（已证可用）。
+
+## 8. 第 3 轮（00:55–01:00）：**系统代理是正解**，`/anticheat/` 全部拿到
+
+**方案**：`tools/eac_capture_proxy_run.py` —— HKCU IE 代理 → `127.0.0.1:18092`（我们的 **CONNECT** 代理，
+非拦截域名链回原上游 `7897`）+ tshark 抓 loopback + 落原始字节；收尾精确还原代理。
+（**hosts/透明模式两轮都失败，见 §6/§7 —— 因为游戏进程内的 EOS 走系统代理，不吃 hosts。**）
+
+### 8.1 结果：完胜
+
+```
+anticheat 请求 21 / 响应 21，raw_files=22（原始字节全量）
+req_len_series = [72, 0, 388, 4904, 728, 8544, 10056, 8000, 0, 33280, 23424, 7976, 4328, 8024, 896, 0, 768, 1120, 0, 1088, 0]
+dt_ms_series   = [51000, 3000, 7000, 3000, 7000, 5000, 3000, 31000, 3000, 24000, 4000, 5000, 5000, 6000, 14000, 3000, 14000, 42000, 19000, 41000]
+ie_proxy_restored_identical = True
+telemetry.app_ids = ['EOSSDK.PhaseRelease.ReleaseBuild', 'f163733398a54335966be5046900198b']
+telemetry.event_names = [EOSSDK.HTTP.Complete, EOSSDK.Heartbeat, GameHeartbeat, GameStartup,
+                         SDKOverlayComponent.Init, SessionStart, UsageMetric]
+```
+- v8 会话主通道 12 条，长度 **388 B–33,280 B**，与 T6a 的 388 B–33,472 B 同量级；间隔 3–14 s，偶发 24–42 s；
+- v6 服务状态通道 2 条（响应固定 682 B）—— 与 T6a 完全一致；
+- 首项 `72` 是采集器的开窗自检（PREFLIGHT），不属游戏流量。
+
+### 8.2 第一条 `/anticheat/v8` 的客户端自报身份（**注入前后的指纹基线**）
+
+```
+ts 00:56:33 | req 388 B | resp 1289 B | status 200
+user-agent  = EOS-SDK/1.19.1.2-53289219 (Windows/10.0.26100.10002.64bit) Helldivers 2/Developer Build (1.8.47139.0)
+x-eos-version = 1.19.1.2-53289219
+x-epic-correlation-id = EOS-xD8Yi4_ATkuPQFIXyiQ8xQ-1h8XRI_a5EqrBWdNZgYO3Q
+content-type = application/octet-stream | accept-encoding = deflate, gzip
+authorization = Bearer <JWT，约 1375 字符，不落档>
+```
+
+### 8.3 ★ body 结构：**不是明文 protobuf**（自查更正）
+
+我最初看前 64 B 觉得像 protobuf，**实测否证**：
+
+| 检查 | 结果 |
+|---|---|
+| 顶层 protobuf wire 解析 | **失败**（`wt4` / `tag0`）|
+| zlib / gzip / raw-deflate | **都失败** |
+| 熵 | **6.80 bits/byte**（<7.5 ⇒ **不是加密**，是结构化数据）|
+| 前 128 B（每 4 B 小端）| `12, 393216, 262152, 6, 4, 1, 16, 524300, 0, 262144, 12, 4, 336, 6, 11, 0, 101, 5, …` 一串**小整数** |
+| 之后 | 迅速变成高熵字节（像哈希/签名/压缩块）|
+
+⇒ 更准确的描述是：**自定义封装 = 前段小整数头部/描述符表 + 后段高熵载荷**（不是 protobuf，也不是 TLS 之外再加一层加密的整体密文）。
+**下一步**（若要读内容）：从 2 字节/4 字节边界试探字段表，或对高熵段单独尝试已知压缩/签名算法；**不建议暴力破解**。
+
+### 8.4 三轮对照（这轮把前两轮的负结论固化了）
+
+| 轮 | 变量 | `/anticheat/` | 结论 |
+|---|---|---|---|
+| 1 | hosts + 透明终结 | **0 条** | hosts 对游戏侧 EOS 无效（只对启动器有效）|
+| 2 | + 机器根 CA + 掐 DoH | **0 条** | 与本轮变量无关；游戏不吃 hosts |
+| **3** | **IE 代理 + CONNECT 终结** | **21 条** | **正解** |
