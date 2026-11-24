@@ -124,25 +124,40 @@ python tools/mock_request_summary.py --log-dir D:/mod/tmp/save-test-20261124/moc
 结论：**覆盖层在本地按 §7 命令完全可用**，四条判据的前三条在 mock 侧已可复现；
 `ItemPackages` 是**目录数据**（不是玩家档），走 baseline 是设计而非缺口。
 
-### 7.2 ★ 判据③的精确含义（预跑发现，容易误判）
+### 7.2 ★ 判据③：按请求记录解析依据（产品线 20:5x 对齐后定稿）
 
-`[player:…]` 只证明"按玩家分档生效"，**不能区分是哪条路径**。`/health.players` 里有两个字段可区分：
+`[player:…]` 只证明"按玩家分档生效"，**不区分是哪条路径**。产品线确认他们**每个上游请求都盖头**，
+只有 5 种情况（`server.py:38-53` 盖章、`:253-277` 调用点、`active_save.py:606-635` 取值）：
 
-| `last_source` | 含义 | S4 下的解读 |
-|---|---|---|
-| `header:<prebind\|getmotd\|getmessages>` | 引擎注入的 `X-HD2-Account` 生效 | **理想路径**，产品身份头工作正常 |
-| `ip` | 未带头，靠**学习到的来源 IP** 落到玩家档 | 可接受（单账号场景），但说明身份头没到 mock |
-| （空）| 既无头也无可学 IP → 回落 baseline | **判据失败**（界面会显示 exp 1 而不是 210）|
+| 引擎状态 | 发出的头 | mock 侧期望 | 说明 |
+|---|---|---|---|
+| 有 `_last` 预绑定、未 GetMotd 校验（**S4 起步态**） | `Account:<主号>` + `Source: prebind` | **`header:prebind`** | 命中索引就照给，**不学 IP** |
+| GetMotd 校验通过 | 同上 + `getmotd` | **`header:getmotd`** | 并学 IP |
+| GetMotd 到但校验失败/换号异常 | **只发** `Source: uncertain` | `uncertain:…` → 回落 baseline | 设计内 |
+| 冷启动无 `_last` | 不盖头 | `single`（索引 1 人）/ 空（≥2 人 ⇒ baseline） | 测试初始态才出现 |
+| 客户端 lobby 自带头 | 不重复加（保留客户端值） | `header:<客户端 tag 或 unknown>` | 设计内，不是异常 |
 
-实测解析顺序与副作用（20:58 干净重启后分流验证）：
+⇒ **S4 里出现 `ip` = 事故**（说明引擎的身份头没到 mock），不是我原先以为的"可接受的降级"。
+我原先的担忧（IP 学习"最后带头者获胜"会顶替身份头）在 S4 **不会触发**，因为 prebind 不学 IP、
+且每个请求都带头。
+
+**判据必须按请求看，不能事后读 `/health`**：`PlayerStore.last_source` 是 **sticky**（只保留最后一次解析），
+多线程下还会被别的请求覆盖。为此 mock 已改为**每行日志带解析依据**：
+
+```
+21:07:17.937 GET    /api/Progression 0B -> 200 2468B [player:76561198968648344 via header:prebind]
+21:07:17.987 GET    /api/Progression/inventory 0B -> 200 4574B [player:… via header:getmotd]
+21:07:18.039 GET    /api/Progression 0B -> 200 2468B [player:… via ip]
+```
+
+实现：`PlayerStore.resolve_ex()` 与玩家**原子返回**依据 → `Response.resolution` → `_record["resolution"]`
+→ 日志 `[source via resolution]`（`mock/server.py:_format_request_log`）。11 条单测锁死。
+
+**实测解析分支**（本地干净重启后逐条验过，仅作背景语义）：
 1. 无头 + 无学习 IP → baseline（exp 1）；
-2. 带主号头 → `header:getmotd`、exp 210，并**学习该 IP=主号**；
-3. 带副号头 → exp 1（副号自己的档），**学习 IP 被改写成副号**；
-4. 再发无头 → `ip` 路径、exp 1（上面被改写成副号的结果）。
-
-⇒ **IP 学习是"最后见过的人获胜"**：同机切号后若不带头，会落到上一个带头的账号。
-生产上引擎始终带头，所以这是可接受的降级；但**做 S4 判据时要同时看 `last_source`**，
-否则"界面是 210"可能来自 IP 学习而非身份头，结论会偏乐观。
+2. 带主号头 `getmotd` → exp 210，并学到 IP=主号；
+3. 带副号头 → 副号档，IP 被改写成副号；4. 再发无头 → `ip` 路径拿到副号档。
+（这两条只是说明 `ip`/`single` 兜底存在，**S4 不该走到**。）
 
 ### 7.3 S4 判据的收敛版（判据③细化）
 
@@ -150,7 +165,8 @@ python tools/mock_request_summary.py --log-dir D:/mod/tmp/save-test-20261124/moc
 |---|---|---|
 | ① 进度 | 界面经验 210（不是 1）| 覆盖层生效 |
 | ② 物品 | `3608481516=1000`、`897894480=1`、库存 56 行 | 覆盖层生效 |
-| ③ 身份路径 | 日志 `[player:76561198968648344]` **且** `/health.players.last_source` 非空 | 区分 header / ip 两条路径 |
+| ③ 身份路径 | 日志出现 `[player:76561198968648344 via header:prebind]` 与 `via header:getmotd`；**出现 `via ip` 即失败** | 证明是**身份头**给的档，不是 IP 兜底 |
+| ③′ 反证（可选）| `/health.players.learned_ips` 在 getmotd 后为 1、`last_header_source=getmotd` | 与请求日志互证 |
 | ④ 幂等 | 引擎 0 条 `SAVE` 行 | 产物已含账本值 |
 
 ## 8. S2 判据（换号不混档）— 定稿
@@ -184,3 +200,6 @@ python tools/mock_request_summary.py --log-dir D:/mod/tmp/save-test-20261124/moc
 - **S2-4 依赖产品文案**：文案在 `src/hd2proxy/engine/active_save.py:760`（warn 通道）与 `saves.py:797`（log 通道），
   两处措辞略有差异（`**不合并**` vs `不合并`），工具用 `身份切换：` / `身份确认：` 前缀匹配，改文案时需同步工具。
 - 产品只在「**旧档已识别**」时才打 `身份切换`；副号档首次为 `local/未识别` 时走「已合并」，两种都算过。
+- 产品线 2026-11-24 答复：**实跑只会出现 `active_save.py:760` 那条**；`saves.py:797` 的
+  `身份切换：旧档 X（已识别）→ 新档 Y` 变体目前只在单测里（`tests/unit/test_saves.py:353/363`），
+  但将来可能合并两条路径 ⇒ 工具正则已顺带容错 `旧档/新档` 前缀（1 行，防未来变化）。

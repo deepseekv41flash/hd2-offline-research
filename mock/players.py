@@ -140,35 +140,50 @@ class PlayerStore:
         * 只要**带了身份头**，就认为客户端已给出身份断言 —— 命中索引就回该玩家，
           **命中不到就回落公共数据，绝不用"唯一玩家"去猜**（否则会把别人的档给错人）；
         * `prebind` 是未校验断言：可以照给，但**不写 IP 映射**（避免污染后续无头请求）。
+
+        `resolve_ex()` 的薄包装（老调用方/单测用）。
         """
+        return self.resolve_ex(headers=headers, client_addr=client_addr)[0]
+
+    def resolve_ex(self, headers: dict | None = None,
+                   client_addr: str = "") -> tuple[Player | None, str]:
+        """同 `resolve()`，但**原子地**返回本次解析依据，避免撞上 `last_source` 的 sticky 语义。
+
+        返回 `(player, how)`，`how` ∈
+          `header:<prebind|getmotd|getmessages|unknown>` / `header-unresolved:<tag>` /
+          `uncertain:<src>` / `ip` / `single` / `""`（回落公共数据）。
+
+        为什么要成对返回：`last_source` 存在实例上，多线程下"解析完再读 last_source"
+        可能读到别的线程刚写的值；日志里"这个响应靠什么解析的"必须与响应一起产生。
+        """
+        player, how = self._resolve(headers=headers, client_addr=client_addr)
+        self.last_source = how
+        return player, how
+
+    def _resolve(self, headers: dict | None = None,
+                 client_addr: str = "") -> tuple[Player | None, str]:
         ids = self.header_ids(headers)
         src = self.header_source(headers)
         self.last_header_source = src
         if not ids and src:
             # 引擎显式声明"本局身份不可信"（如 GetMotd 校验失败）：只带 Source、不带 Account。
             # 此时必须跳过 IP 映射/唯一玩家兜底 —— 否则会把之前学到的映射当成当前身份用。
-            self.last_source = f"uncertain:{src}"
-            return None
+            return None, f"uncertain:{src}"
         if ids:
             player = self._from_ids(ids)
             tag = src or "unknown"
             if player is not None:
                 if src != "prebind":
                     self._learn_ip(client_addr, player)
-                self.last_source = f"header:{tag}"
-                return player
-            self.last_source = f"header-unresolved:{tag}"
-            return None
+                return player, f"header:{tag}"
+            return None, f"header-unresolved:{tag}"
         if client_addr:
             sid = self._ip_to_steam.get(client_addr)
             if sid in self.players:
-                self.last_source = "ip"
-                return self.players[sid]
+                return self.players[sid], "ip"
         if len(self.players) == 1:
-            self.last_source = "single"
-            return next(iter(self.players.values()))
-        self.last_source = ""
-        return None
+            return next(iter(self.players.values())), "single"
+        return None, ""
 
     def _learn_ip(self, client_addr: str, player: Player) -> None:
         if client_addr:

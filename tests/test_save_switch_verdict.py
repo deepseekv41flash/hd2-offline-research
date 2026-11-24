@@ -202,3 +202,11 @@ def test_cli_json_and_exit_codes(tmp_path: Path, capsys):
                     "--main", STEAM_A, "--alt", STEAM_B])
     assert rc2 == 1
     assert "结论：FAIL" in capsys.readouterr().out
+
+
+def test_switch_regex_tolerates_legacy_wording():
+    """产品 `saves.py:797` 的「旧档 X（已识别）→ 新档 Y」变体也要认得（防将来合并两条路径）。"""
+    text = ("身份切换：旧档 steam_76561198968648344（已识别）→ 新档 "
+            "steam_61199881579811；不合并（避免跨玩家混档）\n")
+    ev = svv.parse_log(text)
+    assert ev["switches"] == [("steam_76561198968648344", "steam_61199881579811")]

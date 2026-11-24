@@ -63,6 +63,20 @@ def _now_stamp() -> str:
     return datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
 
+def _format_request_log(method: str, path: str, body: bytes, resp: Response, *,
+                        peer_ip: str = "", eff_ip: str = "") -> str:
+    """一行请求日志；按玩家分档时把**本次解析依据**写进方括号。
+
+    形如 `12:00:00.000 GET    /api/Progression 0B -> 200 2468B [player:7656… via header:getmotd]`。
+    为什么必须按请求记录：`PlayerStore.last_source` 是 sticky 的（最后一次解析），
+    多线程下事后读 `/health` 既可能被别的请求覆盖，也无法证明"这个响应"靠头还是靠 IP。
+    """
+    how = f" via {resp.resolution}" if getattr(resp, "resolution", "") else ""
+    via = "" if eff_ip == peer_ip else f" via {peer_ip}"
+    return (f"{_now_stamp()} {method:6s} {path} "
+            f"{len(body)}B -> {resp.status} {len(resp.body or b'')}B [{resp.source}{how}]{via}")
+
+
 class _Logger:
     """线程安全地写 stdout + 可选文件。"""
 
@@ -228,11 +242,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
             return
         peer_ip = self.client_address[0] if self.client_address else ""
         eff_ip = self._client_addr(headers)
-        via = "" if eff_ip == peer_ip else f" via {peer_ip}"
-        logger.log(
-            f"{_now_stamp()} {self.command:6s} {self.path} "
-            f"{len(body)}B -> {resp.status} {len(resp.body or b'')}B [{resp.source}]{via}"
-        )
+        logger.log(_format_request_log(self.command, self.path, body, resp,
+                                       peer_ip=peer_ip, eff_ip=eff_ip))
         if getattr(server, "log_headers", False):
             shapes = ",".join(
                 f"{k}={len(v)}" for k, v in headers.items()

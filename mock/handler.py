@@ -33,6 +33,11 @@ class Response:
     body: bytes = b""
     content_type: str = "application/json"
     source: str = ""            # 命中来源，便于日志/断言：state:xxx / exact / base / template / fallback
+    resolution: str = ""        # 按玩家分档时**这一次请求**的解析依据：
+                                #   header:prebind / header:getmotd / header:getmessages /
+                                #   header-unresolved:<tag> / uncertain:<src> / ip / single / ""
+                                # 为什么单独记：`PlayerStore.last_source` 是 sticky 的（最后一次解析），
+                                # 事后读 /health 不能证明"这个响应是靠头还是靠 IP 给的"。
 
     @property
     def text(self) -> str:
@@ -179,12 +184,14 @@ class MockHandler:
 
         # 按玩家覆盖层优先：save-export 产物里有的端点直接回该玩家的响应体
         if self.players is not None:
-            player = self.players.resolve(headers=headers, client_addr=client_addr)
+            player, how = self.players.resolve_ex(headers=headers, client_addr=client_addr)
             if player is not None:
                 payload = self.players.body_for(player, method, raw_path)
                 if payload is not None:
+                    # resolution 记录**本请求**是靠头(header:*)还是靠学到的 IP(ip) 解析到的，
+                    # S4 判据要用它区分"身份头真的到了 mock"和"只是 IP 兜底"。
                     resp = Response(200, payload, "application/json",
-                                    source=f"player:{player.steam_id}")
+                                    source=f"player:{player.steam_id}", resolution=how)
                     self.stats["player"] += 1
                     self._record(method, raw_path, body, resp)
                     return resp
@@ -407,6 +414,7 @@ class MockHandler:
             "t": time.time(), "method": method, "path": path,
             "in": len(body or b""), "status": resp.status,
             "out": len(resp.body or b""), "source": resp.source,
+            "resolution": resp.resolution,
         })
         if len(self.request_log) > 5000:
             del self.request_log[:2500]

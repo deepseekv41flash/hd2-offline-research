@@ -41,7 +41,10 @@ IDENTITY_TOLERANCE = ("source",)   # 允许变化的 identity 子字段（身份
 # 产品侧文案（src/hd2proxy/engine/active_save.py:760 / saves.py:797）：
 #   "⚠ 身份切换：steam_A（已识别）→ steam_B；**不合并**（避免跨玩家混档）。本局写入=无，回滚=none"
 #   "身份确认：steam_A（local/未识别）已合并进 steam_B 并归档"
-SWITCH_RE = re.compile(r"身份切换：\s*(steam_\d+)\s*（已识别）\s*→\s*(steam_\d+)")
+# 产品线 2026-11-24 回复：实跑只会出现 active_save.py 那条；saves.py:797 的
+# `身份切换：旧档 X（已识别）→ 新档 Y` 变体目前只在单测里，但将来可能合并——这里顺带容错。
+SWITCH_RE = re.compile(
+    r"身份切换：\s*(?:旧档\s*)?(steam_\d+)\s*（已识别）\s*→\s*(?:新档\s*)?(steam_\d+)")
 MERGE_RE = re.compile(r"身份确认：\s*(steam_\d+)（[^）]*）\s*已合并进\s*(steam_\d+)")
 PREBIND_RE = re.compile(r"首屏预绑定\s*(steam_\d+)")
 ROLLBACK_RE = re.compile(r"会话回滚")
