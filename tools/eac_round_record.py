@@ -16,6 +16,7 @@
 | `B0(deg)` | 本想跑 `B0`，但**没拿到句柄**（`pi_ptr` 仍空）| 等价于 `C`，不能当 B0 |
 | `B1` | 改启动器 + 拿句柄 + **真注入** | 与 `B0` 比 ⇒ 测"注入本身" |
 | `B1(deg)` | 本想跑 `B1`，但**注入没发生** | 等价于 `B0`，不能当 B1 |
+| `M2-kernel` | **内核层探查**（BYOVD 加载易受攻击驱动 + 句柄权限改写，只读内存）| **不属于 A/C/B 阶梯**，不入任何对照；只回答"这一轮四通道有没有变化" |
 | `void` | 轮次作废（游戏没起来/链路没通/被冻死等）| **不进任何臂**，只留痕 |
 
 三臂 + 两两对比 + RE 的毫秒级时刻，靠嘴记一定会乱。所以每轮采完跑这条命令，
@@ -42,7 +43,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 TOOLS = Path(__file__).resolve().parent
-VALID_ARMS = ("A", "C", "B", "B0", "B1", "A(deg)", "C(weak)", "B0(deg)", "B1(deg)", "void")
+VALID_ARMS = ("A", "C", "B", "B0", "B1", "A(deg)", "C(weak)", "B0(deg)", "B1(deg)", "M2-kernel", "void")
 
 
 def _import(name: str):
@@ -76,6 +77,10 @@ def resolve_arm(arm: str, hook_installed: bool | None,
     if arm == "void":
         warnings.append("void 轮次：不进任何臂，仅留痕")
         return "void", warnings
+    if arm == "M2-kernel":
+        warnings.append("M2-kernel：内核层探查轮，不属于 A/C/B 阶梯，"
+                        "不得用于『无信号即安全』的结论（真正的判据在 EAC 内核组件本地）")
+        return arm, warnings
     if arm == "C(weak)":
         warnings.append("C(weak) 臂：补丁未被命中，不得当作『启动器被改』的对照")
         return arm, warnings

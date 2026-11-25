@@ -215,3 +215,11 @@ def test_four_arm_ladder_is_ordered():
     ladder = ["A", "C", "B0", "B1"]
     for a in ladder:
         assert a in rr.VALID_ARMS
+
+
+def test_m2_kernel_arm_accepted_with_scope_warning():
+    """内核探查轮：不属于 A/C/B 阶梯，只回答"这一轮四通道有没有变化"。"""
+    arm, warns = rr.resolve_arm("M2-kernel", None, None)
+    assert arm == "M2-kernel"
+    assert any("不属于 A/C/B 阶梯" in w for w in warns)
+    assert any("内核组件本地" in w for w in warns)
