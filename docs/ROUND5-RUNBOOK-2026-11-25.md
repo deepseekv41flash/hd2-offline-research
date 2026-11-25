@@ -244,6 +244,29 @@ B1   再 + 真注入                   待采
   **不能**排除"已记录待结算"。任何一轮报告都必须带这句；
 - 以上两条即使 B 全绿也必须原样写进报告。
 
+## 2.10 第 5 观察量：JA3 指纹集合（**辅助，不作红判据**）
+
+`ja3-sni.tsv` 每轮采集都会顺带产出，一直没用上。2026-11-25 回头核对**七轮**（A1/A2/A3、C、B0、M2-kernel）：
+
+```
+api.epicgames.dev 的 JA3 集合完全相同，且分布稳定：
+d7268fba5c8ebdc86121861931c04402   每轮 3~5 次（主通道）
+fae0e5d973c96ae1888b99538efa0363   每轮 1 次
+1ce565f411fbc7412e3c5ba0bcfd62ab   每轮 1 次
+```
+
+**用途**：集合或分布变化 ⇒ **强告警**（客户端 TLS 实现被替换 / 流水线重启 / 网络栈被换），
+这种结构性变化比"体积/周期漂移"更特异性，而且**零额外成本**（已在每次抓包里）。
+
+**边界（不许抬高）**：集合一致 **≠** 没被感知 —— TLS 指纹只反映客户端实现，不反映服务端判定。
+
+```bash
+# 单轮检查（0=集合一致 / 1=有变化 / 3=无数据）
+python tools/analyze_ja3.py --run D:/mod/tmp/<round>     --reference state/evidence/ja3-reference-epicgames.json
+```
+
+参考集合：`state/evidence/ja3-reference-epicgames.json`（7 轮并集冻结，`tools/analyze_ja3.py --freeze`）。
+
 ## 3. 采集前 30 秒自检
 
 - [ ] 端口 `18092` 空闲（`netstat -ano | grep 18092`）
